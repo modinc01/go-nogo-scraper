@@ -5,7 +5,7 @@ import cors from "cors";
 const app = express();
 app.use(cors());
 
-const executablePath = "/usr/bin/chromium-browser"; // ✅ これが重要
+const executablePath = "/usr/bin/chromium-browser";
 
 app.get("/api/scrape", async (req, res) => {
   const model = req.query.model;
@@ -14,17 +14,22 @@ app.get("/api/scrape", async (req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      executablePath, // ✅ puppeteer-core と組み合わせて使用
+      executablePath,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     const page = await browser.newPage();
     const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    console.log("🌐 アクセスURL:", url);
+
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 0 });
 
     const prices = await page.$$eval(".Item__price--3vJWp", elems =>
       elems.map(el => parseInt(el.textContent.replace(/[^\d]/g, ""), 10)).filter(n => !isNaN(n))
     );
+
+    console.log("💴 取得価格:", prices);
 
     await browser.close();
 
