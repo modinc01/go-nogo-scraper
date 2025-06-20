@@ -10,32 +10,38 @@ app.get("/api/scrape", async (req, res) => {
   const model = req.query.model;
   if (!model) return res.status(400).json({ error: "モデルが指定されていません" });
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    executablePath: executablePath(), // Render の内部ブラウザを使用
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+  try {
+    const browser = await puppeteer.launch({
+      headless: true,
+      executablePath: executablePath(), // Render内部のChromeパスを取得
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
 
-  const page = await browser.newPage();
-  const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+    const page = await browser.newPage();
+    const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
+    await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  const prices = await page.$$eval(".Item__price--3vJWp", elems =>
-    elems.map(el => {
-      const text = el.textContent.replace(/[^\d]/g, "");
-      return parseInt(text, 10);
-    }).filter(p => !isNaN(p))
-  );
+    const prices = await page.$$eval(".Item__price--3vJWp", elems =>
+      elems
+        .map(el => parseInt(el.textContent.replace(/[^\d]/g, ""), 10))
+        .filter(n => !isNaN(n))
+    );
 
-  await browser.close();
+    await browser.close();
 
-  if (prices.length === 0) return res.status(404).json({ error: "価格が取得できませんでした" });
+    if (prices.length === 0) {
+      return res.status(404).json({ error: "価格データが見つかりませんでした。" });
+    }
 
-  const avg = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
-  res.json({ avg });
+    const avg = Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
+    res.json({ avg });
+  } catch (err) {
+    console.error("💥 Scrape Error:", err);
+    res.status(500).json({ error: "スクレイピングに失敗しました。" });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("✅ Running on port", PORT);
+  console.log(`✅ Server running on port ${PORT}`);
 });
