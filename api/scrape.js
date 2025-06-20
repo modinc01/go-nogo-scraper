@@ -1,10 +1,11 @@
 import express from "express";
 import puppeteer from "puppeteer-core";
 import cors from "cors";
-import { executablePath } from "puppeteer";
 
 const app = express();
 app.use(cors());
+
+const executablePath = "/usr/bin/chromium-browser"; // ✅ これが重要
 
 app.get("/api/scrape", async (req, res) => {
   const model = req.query.model;
@@ -13,7 +14,7 @@ app.get("/api/scrape", async (req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      executablePath: executablePath(), // Render内部のChromeパスを取得
+      executablePath, // ✅ puppeteer-core と組み合わせて使用
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
@@ -22,9 +23,7 @@ app.get("/api/scrape", async (req, res) => {
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
     const prices = await page.$$eval(".Item__price--3vJWp", elems =>
-      elems
-        .map(el => parseInt(el.textContent.replace(/[^\d]/g, ""), 10))
-        .filter(n => !isNaN(n))
+      elems.map(el => parseInt(el.textContent.replace(/[^\d]/g, ""), 10)).filter(n => !isNaN(n))
     );
 
     await browser.close();
