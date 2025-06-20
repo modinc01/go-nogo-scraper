@@ -12,7 +12,7 @@ app.get("/api/scrape", async (req, res) => {
 
   const browser = await puppeteer.launch({
     headless: true,
-    executablePath: executablePath(), // Renderの環境内のChromiumを使用
+    executablePath: executablePath(), // Render の内部ブラウザを使用
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
