@@ -1,30 +1,41 @@
-// LINEからの型番と仕入価格を受け取った後に使う処理
-const model = 型番; // 例: "MNCF3J/A"
-const cost = 仕入価格; // 例: 45000
+import express from "express";
+import puppeteer from "puppeteer-core";
+import cors from "cors";
+import { executablePath } from "puppeteer";
 
-// 相場価格取得
-const response = await fetch(`https://YOUR-VERCEL-URL/api/scrape?model=${encodeURIComponent(model)}`);
-const data = await response.json();
+const app = express();
+app.use(cors());
 
-if (data.avg) {
-  const avgPrice = data.avg;
+app.get("/api/scrape", async (req, res) => {
+  const model = req.query.model;
+  if (!model) return res.status(400).json({ error: "モデルが指定されていません" });
 
-  // 仕入れ価格に手数15%を加算
-  const totalCost = Math.round(cost * 1.15);
-  const profit = avgPrice - totalCost;
-  const profitRate = Math.round((profit / totalCost) * 100);
-
-  const result = profit >= 10000 || profitRate >= 35 ? "✅ Go" : "❌ NoGo";
-  const replyText = `📦 ${model}\n💴 仕入: ${totalCost}円\n📊 相場: ${avgPrice}円\n📈 利益率: ${profitRate}%\n💰 利益: ${profit}円\n${result}`;
-
-  // LINEに返信
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text: replyText,
+  const browser = await puppeteer.launch({
+    headless: true,
+    executablePath: executablePath(), // Renderの環境内のChromiumを使用
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
-} else {
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text: "❌ 相場取得に失敗しました",
-  });
-}
+
+  const page = await browser.newPage();
+  const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+
+  const prices = await page.$$eval(".Item__price--3vJWp", elems =>
+    elems.map(el => {
+      const text = el.textContent.replace(/[^\d]/g, "");
+      return parseInt(text, 10);
+    }).filter(p => !isNaN(p))
+  );
+
+  await browser.close();
+
+  if (prices.length === 0) return res.status(404).json({ error: "価格が取得できませんでした" });
+
+  const avg = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
+  res.json({ avg });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("✅ Running on port", PORT);
+});
