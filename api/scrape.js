@@ -1,5 +1,5 @@
 import express from "express";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
 import cors from "cors";
 
 const app = express();
@@ -12,18 +12,17 @@ app.get("/api/scrape", async (req, res) => {
   try {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: "/usr/bin/chromium-browser",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
     const page = await browser.newPage();
     const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 0 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-    const prices = await page.$$eval("span.Price__value", elems =>
+    const prices = await page.$$eval(".Item__price--3vJWp", elems =>
       elems.map(el => parseInt(el.textContent.replace(/[^\d]/g, ""), 10)).filter(n => !isNaN(n))
     );
-
-    console.log("🪙 価格リスト:", prices);
 
     await browser.close();
 
@@ -34,12 +33,12 @@ app.get("/api/scrape", async (req, res) => {
     const avg = Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
     res.json({ avg });
   } catch (err) {
-    console.error("💥 Scrape Error:", err);
+    console.error("Scrape Error:", err);
     res.status(500).json({ error: "スクレイピングに失敗しました。" });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
