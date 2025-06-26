@@ -1,44 +1,64 @@
-import express from "express";
 import axios from "axios";
-import * as cheerio from "cheerio"; // ← 修正ポイント
-import cors from "cors";
+import * as cheerio from "cheerio";
 
-const app = express();
-app.use(cors());
+export default defineEventHandler(async (event) => {
+  const query = getQuery(event);
+  const keyword = query.q || "";
 
-app.get("/api/scrape", async (req, res) => {
-  const model = req.query.model;
-  if (!model) return res.status(400).json({ error: "モデルが指定されていません" });
+  // クエリがなければ終了
+  if (!keyword) {
+    return { error: "検索ワードが指定されていません。" };
+  }
 
   try {
-    const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-    const { data: html } = await axios.get(url, {
+    // 検索語の正規化（全角→半角、trimなど）
+    const normalizedKeyword = keyword.trim().replace(/\s+/g, " ");
+
+    // 横断検索用のURL（サイト指定なしで全体検索）
+    const encoded = encodeURIComponent(normalizedKeyword);
+    const url = `https://aucfan.com/search1/q-${encoded}/`; // 横断検索ページ
+
+    const res = await axios.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    });
+
+    const html = res.data;
+    const $ = cheerio.load(html);
+
+    const priceList = [];
+
+    // メルカリ・ヤフオク・Yahooフリマの成約価格だけを取得
+    $(".aucfan-search-result-list li").each((i, el) => {
+      const market = $(el).find(".searchResult__site").text().trim();
+      if (market.match(/メルカリ|ヤフオク|Yahooフリマ/)) {
+        const priceText = $(el)
+          .find(".productPrice")
+          .text()
+          .replace(/[^0-9]/g, "");
+        if (priceText) {
+          priceList.push(Number(priceText));
+        }
       }
     });
 
-    const $ = cheerio.load(html);
-    const prices = [];
-
-    $(".Item__price--3vJWp").each((_, el) => {
-      const price = parseInt($(el).text().replace(/[^\d]/g, ""), 10);
-      if (!isNaN(price)) prices.push(price);
-    });
-
-    if (prices.length === 0) {
-      return res.status(404).json({ error: "価格データが見つかりませんでした。" });
+    if (priceList.length === 0) {
+      return { keyword: normalizedKeyword, count: 0, avg: 0, prices: [] };
     }
 
-    const avg = Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
-    res.json({ avg });
+    const sum = priceList.reduce((a, b) => a + b, 0);
+    const avg = Math.floor(sum / priceList.length);
+
+    return {
+      keyword: normalizedKeyword,
+      count: priceList.length,
+      avg,
+      prices: priceList,
+    };
   } catch (err) {
     console.error("💥 Scrape Error:", err);
-    res.status(500).json({ error: "スクレイピングに失敗しました。" });
+    return { keyword: keyword, count: 0, avg: 0, prices: [] };
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
 });
