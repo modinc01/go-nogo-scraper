@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node api/scrape.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "start": "node api/scrape.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
-    "puppeteer": "^21.3.8"
+    "express": "^4.18.2"
   }
 }
