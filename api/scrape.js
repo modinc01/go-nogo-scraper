@@ -1,6 +1,6 @@
 import express from "express";
-import puppeteer from "puppeteer";
 import cors from "cors";
+import puppeteer from "puppeteer";
 
 const app = express();
 app.use(cors());
@@ -11,13 +11,13 @@ app.get("/api/scrape", async (req, res) => {
 
   try {
     const browser = await puppeteer.launch({
-      headless: true,
+      headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
     const page = await browser.newPage();
     const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
     const prices = await page.$$eval(".Item__price--3vJWp", elems =>
       elems
