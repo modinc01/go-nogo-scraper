@@ -1,5 +1,5 @@
 import express from "express";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
 import cors from "cors";
 
 const app = express();
@@ -13,11 +13,12 @@ app.get("/api/scrape", async (req, res) => {
     const browser = await puppeteer.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: "/usr/bin/chromium-browser", // Render の既存 Chrome パス
     });
 
     const page = await browser.newPage();
     const url = `https://aucfan.com/search1/q-${encodeURIComponent(model)}`;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
     const prices = await page.$$eval(".Item__price--3vJWp", elems =>
       elems
