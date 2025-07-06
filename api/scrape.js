@@ -1,46 +1,27 @@
 import axios from "axios";
-import * as cheerio from "cheerio";
+import cheerio from "cheerio";
 
-
-export default async function scrapeHandler(req, res) {
-  const query = req.body.q;
-  if (!query) {
-    return res.status(400).json({ error: "Query not provided" });
-  }
-
+export default async function scrapeHandler(keyword) {
   try {
-    const encoded = encodeURIComponent(query);
-    const url = `https://aucfan.com/search1/q-${encoded}/`;
-
-    const { data } = await axios.get(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-      },
-    });
-
+    const url = `https://aucfan.com/search1/q-${encodeURIComponent(keyword)}/`;
+    const { data } = await axios.get(url);
     const $ = cheerio.load(data);
-    const items = [];
+    const prices = [];
 
-    $(".aucfan_item_box").each((_, el) => {
-      const title = $(el).find(".product__title").text().trim();
-      const price = $(el).find(".product__price").text().replace(/[^\d]/g, "");
-      const site = $(el).find(".product__site").text().trim();
-      const num = parseInt(price, 10);
-
-      if (title && num && ["メルカリ", "ヤフオク!", "Yahoo!フリマ"].some(s => site.includes(s))) {
-        items.push(num);
-      }
+    $(".article__item__price").each((_, el) => {
+      const text = $(el).text().replace(/[^\d]/g, "");
+      const price = parseInt(text, 10);
+      if (!isNaN(price)) prices.push(price);
     });
 
-    if (items.length === 0) {
-      return res.json({ average: 0, count: 0, items: [] });
-    }
+    if (prices.length === 0) return { averagePrice: "0" };
 
-    const avg = Math.round(items.reduce((a, b) => a + b, 0) / items.length);
-    res.json({ average: avg, count: items.length, items });
-  } catch (error) {
-    console.error("Scrape Error:", error.message);
-    res.status(500).json({ error: "Scraping failed" });
+    const average =
+      Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
+
+    return { averagePrice: String(average) };
+  } catch (err) {
+    console.error("Scrape Error:", err.message);
+    return { averagePrice: "0" };
   }
 }
