@@ -1,83 +1,60 @@
 import express from "express";
-import bodyParser from "body-parser";
 import axios from "axios";
+import dotenv from "dotenv";
 import scrapeHandler from "./api/scrape.js";
 
+dotenv.config();
+
 const app = express();
-const PORT = process.env.PORT || 10000;
+const port = process.env.PORT || 10000;
 
-// LINE Bot用のアクセストークン
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+app.use(express.json());
 
-app.use(bodyParser.json());
-
-// テスト用GETエンドポイント
-app.get("/", (req, res) => {
-  res.send("✅ Server is running");
-});
-
-// スクレイピングAPI
-app.post("/api/scrape", async (req, res) => {
-  try {
-    const data = await scrapeHandler(req.body.q);
-    res.json(data);
-  } catch (error) {
-    console.error("Scrape Error:", error.message);
-    res.status(500).json({ error: "Scraping failed" });
-  }
-});
-
-// LINE Webhookエンドポイント
+// LINE Webhook エンドポイント
 app.post("/webhook", async (req, res) => {
+  const events = req.body.events;
+  if (!events || events.length === 0) {
+    return res.sendStatus(200);
+  }
+
+  const event = events[0];
+  const replyToken = event.replyToken;
+  const messageText = event.message?.text || "";
+
   try {
-    const events = req.body.events;
-    if (!events || !Array.isArray(events)) {
-      return res.status(200).send("No events");
-    }
+    const response = await axios.post(
+      "https://go-nogo-scraper.onrender.com/api/scrape",
+      { q: messageText }
+    );
 
-    for (const event of events) {
-      if (event.type === "message" && event.message.type === "text") {
-        const keyword = event.message.text;
-        const userId = event.source.userId;
+    const avg = response.data?.avg;
+    const replyText = avg ? `相場平均: ¥${avg}` : "相場が見つかりませんでした。";
 
-        try {
-          const result = await scrapeHandler(keyword);
-
-          const avg = result?.averagePrice ?? "該当なし";
-          const replyText = `「${keyword}」の平均成約価格は ${avg} 円です。`;
-
-          await axios.post(
-            "https://api.line.me/v2/bot/message/reply",
-            {
-              replyToken: event.replyToken,
-              messages: [
-                {
-                  type: "text",
-                  text: replyText,
-                },
-              ],
-            },
-            {
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
-              },
-            }
-          );
-        } catch (err) {
-          console.error("LINE返信エラー:", err.message);
-        }
+    await axios.post(
+      "https://api.line.me/v2/bot/message/reply",
+      {
+        replyToken,
+        messages: [{ type: "text", text: replyText }],
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
       }
-    }
+    );
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhookエラー:", err.message);
+    console.error("LINE返信エラー:", err.message);
     res.sendStatus(500);
   }
 });
 
-// サーバー起動
-app.listen(PORT, () => {
-  console.log(`✅ Server is running on port ${PORT}`);
+// Scraping API
+app.post("/api/scrape", scrapeHandler);
+
+// ポートバインド
+app.listen(port, () => {
+  console.log(`✅ Server is running on port ${port}`);
 });
