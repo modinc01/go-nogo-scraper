@@ -1,27 +1,33 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 
-export default async function scrapeHandler(keyword) {
+export default async function scrapeHandler(req, res) {
   try {
-    const url = `https://aucfan.com/search1/q-${encodeURIComponent(keyword)}/`;
+    const query = req.body.q;
+    if (!query) return res.status(400).json({ error: "No query provided." });
+
+    const encoded = encodeURIComponent(query);
+    const url = `https://aucfan.com/search1/q-${encoded}/`;
+
     const { data } = await axios.get(url);
     const $ = cheerio.load(data);
+
     const prices = [];
 
-    $(".article__item__price").each((_, el) => {
+    $("div.item__price--value").each((_, el) => {
       const text = $(el).text().replace(/[^\d]/g, "");
-      const price = parseInt(text, 10);
-      if (!isNaN(price)) prices.push(price);
+      if (text) prices.push(parseInt(text));
     });
 
-    if (prices.length === 0) return { averagePrice: "0" };
+    if (prices.length === 0) {
+      return res.json({ avg: 0, count: 0 });
+    }
 
-    const average =
-      Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
-
-    return { averagePrice: String(average) };
+    const avg = Math.floor(prices.reduce((a, b) => a + b, 0) / prices.length);
+    res.json({ avg, count: prices.length });
   } catch (err) {
     console.error("Scrape Error:", err.message);
-    return { averagePrice: "0" };
+    res.status(500).json({ error: "Scraping failed" });
   }
 }
+
