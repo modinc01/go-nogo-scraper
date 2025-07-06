@@ -1,45 +1,32 @@
-// api/scrape.js
 import axios from "axios";
 import * as cheerio from "cheerio";
 
-export default async function scrapeHandler(req, res) {
-  const query = req.query.q;
-  if (!query) {
-    return res.status(400).json({ error: "クエリが必要です (q=xxx)" });
-  }
-
+export default async function scrapeHandler(query) {
   const encoded = encodeURIComponent(query);
-  const urls = [
-    `https://aucfan.com/search1/q-${encoded}/s-ya/`,
-    `https://aucfan.com/search1/q-${encoded}/s-yf/`,
-    `https://aucfan.com/search1/q-${encoded}/s-mc/`
-  ];
+  const url = `https://aucfan.com/search1/q-${encoded}`;
 
-  let prices = [];
+  try {
+    const { data } = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
+    });
 
-  for (const url of urls) {
-    try {
-      const response = await axios.get(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      });
+    const $ = cheerio.load(data);
+    const prices = [];
 
-      const $ = cheerio.load(response.data);
-      $("div.item__price").each((_, el) => {
-        const text = $(el).text().replace(/[^\d]/g, "");
-        const price = parseInt(text);
-        if (!isNaN(price)) prices.push(price);
-      });
-    } catch (err) {
-      console.error("💥 Error:", err.message);
-    }
+    $("div.prices li").each((_, el) => {
+      const priceText = $(el).text().replace(/[^0-9]/g, "");
+      const price = parseInt(priceText, 10);
+      if (!isNaN(price)) prices.push(price);
+    });
+
+    if (prices.length === 0) return { avgPrice: 0, count: 0 };
+
+    const avgPrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
+    return { avgPrice, count: prices.length };
+  } catch (err) {
+    console.error("💥 Scrape Error:", err);
+    throw err;
   }
-
-  if (prices.length === 0) {
-    return res.json({ avg: 0, count: 0 });
-  }
-
-  const avg = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
-  return res.json({ avg, count: prices.length });
 }
