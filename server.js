@@ -1,6 +1,8 @@
-import express from "express";
-import axios from "axios";
-import cheerio from "cheerio";
+const express = require("express");
+const axios = require("axios");
+const cheerio = require("cheerio");
+const cors = require("cors");
+
 
 const app = express();
 app.use(express.json());
