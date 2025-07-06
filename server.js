@@ -1,52 +1,37 @@
 import express from "express";
-import bodyParser from "body-parser";
-import scrapeHandler from "./api/scrape.js"; // 既存のスクレイプAPI
+import axios from "axios";
+import cheerio from "cheerio";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-// 🔽 これがLINEのWebhook用エンドポイント
-app.post("/webhook", async (req, res) => {
-  const events = req.body.events;
-  if (!events || !Array.isArray(events)) return res.sendStatus(200);
+app.post("/api/scrape", async (req, res) => {
+  const keyword = req.body.q;
+  if (!keyword) return res.status(400).json({ error: "キーワードが指定されていません。" });
 
-  for (const event of events) {
-    if (event.type !== "message" || event.message.type !== "text") continue;
+  try {
+    const url = `https://aucfan.com/search1/q-${encodeURIComponent(keyword)}`;
+    const { data } = await axios.get(url);
+    const $ = cheerio.load(data);
 
-    const userMessage = event.message.text;
-
-    // 相場取得リクエスト
-    let result;
-    try {
-      const scrapeRes = await fetch("http://localhost:10000/scrape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q: userMessage })
-      });
-      const json = await scrapeRes.json();
-      result = json || { avg: 0, hit: 0 };
-    } catch (e) {
-      result = { avg: 0, hit: 0 };
-    }
-
-    const replyText =
-      result.hit === 0
-        ? `「${userMessage}」は0件ヒットでした。`
-        : `平均価格：${result.avg.toLocaleString()}円（${result.hit}件中）`;
-
-    // LINEへの返信（公式アクセストークンを設定済みである前提）
-    await fetch("https://api.line.me/v2/bot/message/reply", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-      },
-      body: JSON.stringify({
-        replyToken: event.replyToken,
-        messages: [{ type: "text", text: replyText }],
-      }),
+    const prices = [];
+    $(".Item__price--3vJWp").each((_, el) => {
+      const text = $(el).text().replace(/[^\d]/g, "");
+      const price = parseInt(text, 10);
+      if (!isNaN(price)) prices.push(price);
     });
-  }
 
-  res.sendStatus(200);
+    if (prices.length === 0) return res.status(200).json({ avg: 0, count: 0 });
+
+    const avg = Math.round(prices.reduce((sum, val) => sum + val, 0) / prices.length);
+    res.json({ avg, count: prices.length });
+  } catch (error) {
+    console.error("💥 Scrape Error:", error.message);
+    res.status(500).json({ error: "Scraping failed" });
+  }
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
 });
