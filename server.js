@@ -1,28 +1,22 @@
-// server.js
 import express from "express";
-import scrape from "./api/scrape.js";
+import scrapeHandler from "./api/scrape.js";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.get("/", (req, res) => {
-  res.send("Go/NoGo Scraper is running.");
-});
-
-app.get("/scrape", async (req, res) => {
-  const query = req.query.q;
-  if (!query) {
-    return res.status(400).json({ error: "Missing query" });
-  }
+app.all("/scrape", async (req, res) => {
+  const q = req.method === "GET" ? req.query.q : req.body.q;
+  if (!q) return res.json({ error: "No query provided" });
 
   try {
-    const result = await scrape(query);
+    const result = await scrapeHandler(q);
     res.json(result);
-  } catch (err) {
-    console.error("Scrape Error:", err);
-    res.status(500).json({ error: "Scraping failed" });
+  } catch (e) {
+    console.error("💥 Scrape Error:", e);
+    res.json({ error: "Scraping failed" });
   }
 });
 
