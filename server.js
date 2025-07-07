@@ -2,6 +2,8 @@ import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
 import scrapeHandler from "./api/scrape.js";
+app.post("/api/scrape", scrapeHandler);
+
 
 dotenv.config();
 
