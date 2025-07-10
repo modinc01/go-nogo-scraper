@@ -1,5 +1,3 @@
-export default async function scrapeHandler(req, res) {
-
 import axios from "axios";
 import * as cheerio from "cheerio";
 
@@ -32,4 +30,3 @@ export default async function scrapeHandler(req, res) {
     res.status(500).json({ error: "Scraping failed" });
   }
 }
-
