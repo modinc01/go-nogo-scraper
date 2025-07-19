@@ -1,6 +1,6 @@
 import express from "express";
-import axios from "axios";
 import dotenv from "dotenv";
+import axios from "axios";
 import scrapeHandler from "./api/scrape.js";
 
 dotenv.config();
@@ -9,20 +9,18 @@ const port = process.env.PORT || 10000;
 
 app.use(express.json());
 
-// スクレイピングAPI
-app.post("/api/scrape", scrapeHandler);
-
-// LINE webhook
 app.post("/webhook", async (req, res) => {
-  const event = req.body.events?.[0];
-  if (!event || !event.message || !event.replyToken) {
-    return res.sendStatus(200);
-  }
+  const events = req.body.events;
+  if (!events || events.length === 0) return res.sendStatus(200);
+
+  const event = events[0];
+  const replyToken = event.replyToken;
+  const messageText = event.message?.text || "";
 
   try {
     const response = await axios.post(
       "https://go-nogo-scraper.onrender.com/api/scrape",
-      { q: event.message.text }
+      { q: messageText }
     );
 
     const avg = response.data?.avg;
@@ -33,14 +31,14 @@ app.post("/webhook", async (req, res) => {
     await axios.post(
       "https://api.line.me/v2/bot/message/reply",
       {
-        replyToken: event.replyToken,
-        messages: [{ type: "text", text: replyText }]
+        replyToken,
+        messages: [{ type: "text", text: replyText }],
       },
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
-        }
+          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
       }
     );
 
@@ -50,6 +48,8 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(500);
   }
 });
+
+app.post("/api/scrape", scrapeHandler);
 
 app.listen(port, () => {
   console.log(`✅ Server is running on port ${port}`);
