@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
@@ -5,21 +6,18 @@ import scrapeHandler from "./api/scrape.js";
 
 dotenv.config();
 
-const app = express(); // ← これを先に定義
-
+const app = express();
 const port = process.env.PORT || 10000;
 
 app.use(express.json());
 
-// Scraping API エンドポイント
+// Scraping API
 app.post("/api/scrape", scrapeHandler);
 
-// LINE Webhook エンドポイント
+// LINE Webhook
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
-  if (!events || events.length === 0) {
-    return res.sendStatus(200);
-  }
+  if (!events || events.length === 0) return res.sendStatus(200);
 
   const event = events[0];
   const replyToken = event.replyToken;
@@ -33,7 +31,7 @@ app.post("/webhook", async (req, res) => {
 
     const avg = response.data?.avg;
     const replyText = avg
-      ? `相場平均: ¥${avg}`
+      ? `相場平均: \u00a5${avg}`
       : "相場が見つかりませんでした。";
 
     await axios.post(
@@ -57,7 +55,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// サーバー起動
 app.listen(port, () => {
   console.log(`✅ Server is running on port ${port}`);
 });
