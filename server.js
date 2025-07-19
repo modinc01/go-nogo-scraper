@@ -2,15 +2,17 @@ import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
 import scrapeHandler from "./api/scrape.js";
-app.post("/api/scrape", scrapeHandler);
-
 
 dotenv.config();
 
-const app = express();
+const app = express(); // ← これを先に定義
+
 const port = process.env.PORT || 10000;
 
 app.use(express.json());
+
+// Scraping API エンドポイント
+app.post("/api/scrape", scrapeHandler);
 
 // LINE Webhook エンドポイント
 app.post("/webhook", async (req, res) => {
@@ -30,7 +32,9 @@ app.post("/webhook", async (req, res) => {
     );
 
     const avg = response.data?.avg;
-    const replyText = avg ? `相場平均: ¥${avg}` : "相場が見つかりませんでした。";
+    const replyText = avg
+      ? `相場平均: ¥${avg}`
+      : "相場が見つかりませんでした。";
 
     await axios.post(
       "https://api.line.me/v2/bot/message/reply",
@@ -53,10 +57,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// Scraping API
-app.post("/api/scrape", scrapeHandler);
-
-// ポートバインド
+// サーバー起動
 app.listen(port, () => {
   console.log(`✅ Server is running on port ${port}`);
 });
