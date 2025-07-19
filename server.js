@@ -1,50 +1,46 @@
-// server.js
 import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
 import scrapeHandler from "./api/scrape.js";
 
 dotenv.config();
-
 const app = express();
 const port = process.env.PORT || 10000;
 
 app.use(express.json());
 
-// Scraping API
+// スクレイピングAPI
 app.post("/api/scrape", scrapeHandler);
 
-// LINE Webhook
+// LINE webhook
 app.post("/webhook", async (req, res) => {
-  const events = req.body.events;
-  if (!events || events.length === 0) return res.sendStatus(200);
-
-  const event = events[0];
-  const replyToken = event.replyToken;
-  const messageText = event.message?.text || "";
+  const event = req.body.events?.[0];
+  if (!event || !event.message || !event.replyToken) {
+    return res.sendStatus(200);
+  }
 
   try {
     const response = await axios.post(
       "https://go-nogo-scraper.onrender.com/api/scrape",
-      { q: messageText }
+      { q: event.message.text }
     );
 
     const avg = response.data?.avg;
     const replyText = avg
-      ? `相場平均: \u00a5${avg}`
+      ? `相場平均: ¥${avg}`
       : "相場が見つかりませんでした。";
 
     await axios.post(
       "https://api.line.me/v2/bot/message/reply",
       {
-        replyToken,
-        messages: [{ type: "text", text: replyText }],
+        replyToken: event.replyToken,
+        messages: [{ type: "text", text: replyText }]
       },
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-        },
+          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
+        }
       }
     );
 
