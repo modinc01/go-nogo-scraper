@@ -5,31 +5,25 @@ export default async function scrapeHandler(req, res) {
     const query = req.body.q;
     if (!query) return res.status(400).json({ error: "No query provided." });
 
-    const encoded = encodeURIComponent(query);
-    const url = `https://aucfan.com/search1/q-${encoded}/`;
+    const url = `https://aucfan.com/search1/q-${encodeURIComponent(query)}/`;
 
     const browser = await puppeteer.launch({
+      headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 0 });
+    await page.goto(url, { waitUntil: "networkidle2" });
 
-    // ページ内の価格要素を取得
-    const prices = await page.evaluate(() => {
-      const elements = document.querySelectorAll("div.item__price--value");
-      const priceList = [];
-      elements.forEach((el) => {
-        const text = el.textContent.replace(/[^\d]/g, "");
-        if (text) priceList.push(parseInt(text));
-      });
-      return priceList;
-    });
+    const prices = await page.$$eval("div.item__price--value", (els) =>
+      els
+        .map((el) => el.textContent.replace(/[^\d]/g, ""))
+        .filter((v) => v)
+        .map((v) => parseInt(v))
+    );
 
     await browser.close();
 
-    if (prices.length === 0) {
-      return res.json({ avg: 0, count: 0 });
-    }
+    if (!prices.length) return res.json({ avg: 0, count: 0 });
 
     const avg = Math.floor(prices.reduce((a, b) => a + b, 0) / prices.length);
     res.json({ avg, count: prices.length });
