@@ -9,9 +9,14 @@ export default async function scrapeHandler(req, res) {
     const encoded = encodeURIComponent(query);
     const url = `https://aucfan.com/search1/q-${encoded}/`;
 
-    const { data } = await axios.get(url);
-    const $ = cheerio.load(data);
+    const { data } = await axios.get(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36"
+      }
+    });
 
+    const $ = cheerio.load(data);
     const prices = [];
 
     $("div.item__price--value").each((_, el) => {
