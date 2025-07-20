@@ -1,4 +1,4 @@
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer"; 
 
 export default async function scrapeHandler(req, res) {
   try {
