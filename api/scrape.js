@@ -1,4 +1,5 @@
-import chromium from "chrome-aws-lambda";
+import puppeteer from "puppeteer-core";
+import chromium from "@sparticuz/chromium";
 
 export default async function scrapeHandler(req, res) {
   try {
@@ -9,9 +10,11 @@ export default async function scrapeHandler(req, res) {
     const url = `https://aucfan.com/search1/q-${encoded}/`;
 
     const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
     });
+
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
@@ -21,7 +24,9 @@ export default async function scrapeHandler(req, res) {
 
     await browser.close();
 
-    if (prices.length === 0) return res.json({ avg: 0, count: 0 });
+    if (prices.length === 0) {
+      return res.json({ avg: 0, count: 0 });
+    }
 
     const avg = Math.floor(prices.reduce((a, b) => a + b, 0) / prices.length);
     res.json({ avg, count: prices.length });
