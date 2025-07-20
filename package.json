@@ -6,11 +6,10 @@
     "start": "node server.js",
     "postinstall": "npx puppeteer browsers install chrome"
   },
-  "dependencies": {
-    "axios": "^1.6.8",
-    "cheerio": "^1.0.0-rc.12",
-    "express": "^4.19.2",
-    "puppeteer": "^22.6.3",
-    "dotenv": "^16.4.5"
-  }
+ "dependencies": {
+  "axios": "^1.6.8",
+  "dotenv": "^16.3.1",
+  "express": "^4.19.2",
+  "puppeteer-core": "^22.6.4",
+  "@sparticuz/chromium": "^120.0.0"
 }
