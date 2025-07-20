@@ -1,4 +1,4 @@
-import puppeteer from "puppeteer"; 
+import chromium from "chrome-aws-lambda";
 
 export default async function scrapeHandler(req, res) {
   try {
