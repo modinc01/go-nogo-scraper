@@ -26,9 +26,16 @@ if (hasLineConfig) {
   console.log('⚠️ LINE環境変数が設定されていません。API専用モードで起動します。');
 }
 
-// HTTPクライアントの設定
+// オークファンログイン情報
+const AUCFAN_LOGIN = {
+  email: process.env.AUCFAN_EMAIL,
+  password: process.env.AUCFAN_PASSWORD
+};
+
+// セッション管理用のAxiosインスタンス
 const httpClient = axios.create({
   timeout: 30000,
+  withCredentials: true,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -43,6 +50,13 @@ const httpClient = axios.create({
     'Cache-Control': 'max-age=0'
   }
 });
+
+// セッション状態管理
+let isLoggedIn = false;
+let loginAttempts = 0;
+let lastLoginAttempt = 0;
+const MAX_LOGIN_ATTEMPTS = 3;
+const LOGIN_COOLDOWN = 300000; // 5分
 
 /**
  * 価格文字列から数値を抽出
@@ -81,46 +95,169 @@ function decodeResponse(buffer) {
 }
 
 /**
- * 異常値（新品等）を除外するフィルター
+ * オークファンにログイン
  */
-function filterOutliers(prices) {
-  if (prices.length < 3) return prices;
+async function loginToAucfan() {
+  const now = Date.now();
   
-  // 価格を昇順でソート
-  const sortedPrices = [...prices].sort((a, b) => a - b);
+  // ログイン制限チェック
+  if (loginAttempts >= MAX_LOGIN_ATTEMPTS && (now - lastLoginAttempt) < LOGIN_COOLDOWN) {
+    throw new Error('ログイン試行回数の上限に達しました。しばらく時間をおいてからお試しください。');
+  }
   
-  // Q1, Q3を計算（四分位数）
-  const q1Index = Math.floor(sortedPrices.length * 0.25);
-  const q3Index = Math.floor(sortedPrices.length * 0.75);
-  const q1 = sortedPrices[q1Index];
-  const q3 = sortedPrices[q3Index];
-  const iqr = q3 - q1;
+  if (!AUCFAN_LOGIN.email || !AUCFAN_LOGIN.password) {
+    throw new Error('オークファンのログイン情報が設定されていません。環境変数 AUCFAN_EMAIL, AUCFAN_PASSWORD を設定してください。');
+  }
   
-  // 外れ値の閾値を設定（標準的なIQR法より緩く設定）
-  const lowerBound = q1 - (iqr * 2.0);
-  const upperBound = q3 + (iqr * 2.0);
-  
-  // 外れ値を除外
-  const filteredPrices = sortedPrices.filter(price => 
-    price >= lowerBound && price <= upperBound
-  );
-  
-  console.log(`💡 価格フィルタリング: ${prices.length}件 → ${filteredPrices.length}件（外れ値${prices.length - filteredPrices.length}件除外）`);
-  
-  return filteredPrices.length > 0 ? filteredPrices : prices;
+  try {
+    console.log('🔐 オークファンにログイン中...');
+    
+    // まずログインページを取得してCSRFトークンなどを取得
+    const loginPageResponse = await httpClient.get('https://aucfan.com/login', {
+      responseType: 'arraybuffer'
+    });
+    
+    const loginPageHtml = decodeResponse(Buffer.from(loginPageResponse.data));
+    const $loginPage = cheerio.load(loginPageHtml);
+    
+    // CSRFトークンを取得
+    const csrfToken = $loginPage('input[name="_token"]').val() || 
+                     $loginPage('meta[name="csrf-token"]').attr('content') ||
+                     $loginPage('input[name="csrf_token"]').val();
+    
+    console.log('🔑 CSRFトークン取得:', csrfToken ? '成功' : '失敗');
+    
+    // ログインデータを準備
+    const loginData = new URLSearchParams({
+      email: AUCFAN_LOGIN.email,
+      password: AUCFAN_LOGIN.password,
+      ...(csrfToken && { _token: csrfToken })
+    });
+    
+    // ログインリクエストを送信
+    const loginResponse = await httpClient.post('https://aucfan.com/login', loginData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://aucfan.com/login'
+      },
+      maxRedirects: 5,
+      validateStatus: function (status) {
+        return status >= 200 && status < 400;
+      }
+    });
+    
+    // ログイン成功の確認
+    if (loginResponse.request.res.responseUrl && 
+        loginResponse.request.res.responseUrl.includes('/mypage') ||
+        loginResponse.data.includes('マイページ') ||
+        loginResponse.data.includes('ログアウト')) {
+      
+      isLoggedIn = true;
+      loginAttempts = 0;
+      console.log('✅ オークファンログイン成功');
+      return true;
+    }
+    
+    throw new Error('ログインに失敗しました（認証エラー）');
+    
+  } catch (error) {
+    loginAttempts++;
+    lastLoginAttempt = now;
+    isLoggedIn = false;
+    
+    console.error('❌ オークファンログインエラー:', error.message);
+    throw new Error(`オークファンログインに失敗: ${error.message}`);
+  }
 }
 
 /**
- * オークファンから相場情報を取得（改良版）
+ * 価格データから異常値を除外し、最新データに限定
  */
-async function scrapeAucfan(query) {
+function filterRecentAndValidPrices(results) {
+  if (results.length === 0) return results;
+  
+  // 1. まず明らかに広告や無関係な価格を除外
+  let filtered = results.filter(item => {
+    const price = item.price;
+    const title = item.title.toLowerCase();
+    
+    // 広告関連のキーワードを含む商品を除外
+    const adKeywords = [
+      '初月無料', '月額', 'プレミアム', '会員', '登録', '2200円', '998円',
+      '入会', 'オークファン', 'aucfan', '無料', 'free'
+    ];
+    
+    const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
+    
+    // 価格が異常に安い場合も除外（100円未満）
+    if (price < 100 || hasAdKeyword) {
+      console.log(`🚫 除外: ${title} (${price}円) - 広告またはノイズデータ`);
+      return false;
+    }
+    
+    return true;
+  });
+  
+  console.log(`🧹 ノイズフィルタ: ${results.length}件 → ${filtered.length}件`);
+  
+  // 2. 日付でソートして最新のものを優先
+  filtered.sort((a, b) => {
+    // 日付がある場合は日付でソート、ない場合は配列の順序を維持
+    if (a.date && b.date) {
+      return new Date(b.date) - new Date(a.date);
+    }
+    return 0;
+  });
+  
+  // 3. 最新20件に限定
+  const recentResults = filtered.slice(0, 20);
+  
+  // 4. 統計的外れ値を除外（四分位範囲法）
+  if (recentResults.length >= 5) {
+    const prices = recentResults.map(r => r.price).sort((a, b) => a - b);
+    
+    const q1Index = Math.floor(prices.length * 0.25);
+    const q3Index = Math.floor(prices.length * 0.75);
+    const q1 = prices[q1Index];
+    const q3 = prices[q3Index];
+    const iqr = q3 - q1;
+    
+    // 外れ値の閾値（少し緩めに設定）
+    const lowerBound = q1 - (iqr * 1.5);
+    const upperBound = q3 + (iqr * 1.5);
+    
+    const finalResults = recentResults.filter(item => {
+      const inRange = item.price >= lowerBound && item.price <= upperBound;
+      if (!inRange) {
+        console.log(`📊 統計的外れ値除外: ${item.title} (${item.price}円)`);
+      }
+      return inRange;
+    });
+    
+    console.log(`📊 統計フィルタ: ${recentResults.length}件 → ${finalResults.length}件`);
+    console.log(`📊 価格範囲: ${Math.round(lowerBound)}円 〜 ${Math.round(upperBound)}円`);
+    
+    return finalResults.length > 0 ? finalResults : recentResults.slice(0, 10);
+  }
+  
+  return recentResults;
+}
+
+/**
+ * オークファンから相場情報を取得（ログイン版）
+ */
+async function scrapeAucfanWithLogin(query) {
   try {
-    console.log(`🔍 検索開始: ${query}`);
+    // ログインが必要で、まだログインしていない場合
+    if (!isLoggedIn) {
+      await loginToAucfan();
+    }
+    
+    console.log(`🔍 検索開始: ${query} (ログイン済み)`);
     
     // 日本語文字の場合は追加でエンコーディング処理
     let encodedQuery;
     if (/[ひらがなカタカナ漢字]/.test(query)) {
-      // 日本語が含まれる場合、より安全なエンコーディング
       encodedQuery = encodeURIComponent(query)
         .replace(/'/g, '%27')
         .replace(/\(/g, '%28')
@@ -130,7 +267,8 @@ async function scrapeAucfan(query) {
       encodedQuery = encodeURIComponent(query);
     }
     
-    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/`;
+    // プレミアム会員用の検索URL（過去1ヶ月のデータ）
+    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/?t=30`; // t=30で過去30日
     console.log(`📍 URL: ${aucfanURL}`);
     
     // HTTPリクエストを送信
@@ -138,7 +276,7 @@ async function scrapeAucfan(query) {
       responseType: 'arraybuffer',
       maxRedirects: 5,
       validateStatus: function (status) {
-        return status >= 200 && status < 400; // リダイレクトも許可
+        return status >= 200 && status < 400;
       }
     });
     
@@ -150,197 +288,220 @@ async function scrapeAucfan(query) {
     const buffer = Buffer.from(response.data);
     const html = decodeResponse(buffer);
     
-    // デバッグ用：HTMLの一部をログ出力
-    console.log(`📄 HTML長: ${html.length}文字`);
-    
-    // Cheerioでパース
-    const $ = cheerio.load(html);
-    
-    const results = [];
-    
-    // 2024年版オークファンの更新されたセレクタパターン
-    const selectors = [
-      // 最新のオークファンのセレクタ（推測）
-      '.js-product',
-      '.js-item',
-      '.product-item',
-      '.item-data',
-      '.result-item',
-      '.search-result-item',
-      '.l-product-list-item',
-      '.auction-item',
-      '.product-box',
-      '.item-box',
-      // フォールバック用の汎用セレクタ
-      'tr[class*="item"]',
-      'div[class*="item"]',
-      'li[class*="product"]',
-      'div[class*="product"]'
-    ];
-    
-    // より詳細なセレクタで試行
-    for (const selector of selectors) {
-      console.log(`🔍 セレクタ試行: ${selector}`);
+    // ログイン状態を確認
+    if (html.includes('ログイン') && html.includes('会員登録')) {
+      console.log('⚠️ ログインセッションが切れています。再ログインを試行...');
+      isLoggedIn = false;
+      await loginToAucfan();
       
-      $(selector).each((index, element) => {
-        if (results.length >= 50) return false; // 最大50件まで
-        
-        const $item = $(element);
-        
-        // タイトル取得（複数パターン）
-        let title = $item.find('h3, .title, .product-title, .item-title, .auction-title, a[title]').first().text().trim();
-        if (!title) {
-          title = $item.find('a').first().text().trim();
-        }
-        if (!title) {
-          title = $item.find('[class*="title"]').first().text().trim();
-        }
-        
-        // 価格取得（複数パターン）
-        let priceText = '';
-        const priceSelectors = [
-          '.price',
-          '.product-price', 
-          '.current-price',
-          '.item-price',
-          '.auction-price',
-          '[class*="price"]',
-          'td:contains("円")',
-          'span:contains("円")',
-          'div:contains("円")'
-        ];
-        
-        for (const priceSelector of priceSelectors) {
-          priceText = $item.find(priceSelector).text();
-          if (priceText && priceText.includes('円')) break;
-        }
-        
-        const price = extractPrice(priceText);
-        
-        // 日付取得
-        const date = $item.find('.date, .end-date, .item-date, .auction-date, [class*="date"]').first().text().trim();
-        
-        // URL取得
-        let linkURL = $item.find('a').first().attr('href');
-        if (linkURL && !linkURL.startsWith('http')) {
-          linkURL = 'https://aucfan.com' + linkURL;
-        }
-        
-        // 画像URL取得
-        let imageURL = $item.find('img').first().attr('src');
-        if (imageURL && !imageURL.startsWith('http')) {
-          imageURL = 'https://aucfan.com' + imageURL;
-        }
-        
-        // 有効なデータのみ追加
-        if (title && title.length > 2 && price > 100) { // 最低価格100円以上
-          results.push({
-            title: title.substring(0, 100), // タイトルを100文字に制限
-            price,
-            date,
-            url: linkURL || '',
-            imageURL: imageURL || ''
-          });
-        }
+      // 再度検索を実行
+      const retryResponse = await httpClient.get(aucfanURL, {
+        responseType: 'arraybuffer'
       });
+      const retryBuffer = Buffer.from(retryResponse.data);
+      const retryHtml = decodeResponse(retryBuffer);
       
-      if (results.length > 0) {
-        console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
-        break;
-      }
+      return await parseAucfanResults(retryHtml, query);
     }
     
-    // より汎用的なHTMLパース（フォールバック）
-    if (results.length === 0) {
-      console.log('🔄 フォールバック検索を実行');
-      
-      // 円を含むテキストを直接検索
-      $('*').each((index, element) => {
-        if (results.length >= 20) return false;
-        
-        const $el = $(element);
-        const text = $el.text();
-        
-        // 価格らしきパターンを検索
-        if (text.match(/[\d,]+円/) && text.length < 500) {
-          const priceMatch = text.match(/([\d,]+)円/);
-          if (priceMatch) {
-            const price = extractPrice(priceMatch[1]);
-            if (price > 100 && price < 10000000) { // 100円〜1000万円の範囲
-              // 近くのリンクテキストをタイトルとして取得
-              const nearbyLink = $el.closest('*').find('a').first();
-              const title = nearbyLink.text().trim() || text.substring(0, 50);
-              
-              if (title.length > 3) {
-                results.push({
-                  title,
-                  price,
-                  date: '',
-                  url: '',
-                  imageURL: ''
-                });
-              }
-            }
-          }
-        }
-      });
-    }
-    
-    console.log(`✅ 取得件数: ${results.length}件`);
-    
-    if (results.length === 0) {
-      // HTMLの構造をデバッグ情報として出力
-      console.log('🔍 HTMLデバッグ情報:');
-      console.log('- タイトル:', $('title').text());
-      console.log('- h1要素:', $('h1').text());
-      console.log('- price関連クラス数:', $('[class*="price"]').length);
-      console.log('- 円を含む要素数:', $('*:contains("円")').length);
-    }
-    
-    // 価格データの統計情報を計算（異常値除外）
-    let avgPrice = 0;
-    let maxPrice = 0;
-    let minPrice = 0;
-    let filteredResults = results;
-    
-    if (results.length > 0) {
-      const prices = results.map(r => r.price);
-      const filteredPrices = filterOutliers(prices);
-      
-      // フィルタ後の結果セットを作成
-      if (filteredPrices.length < results.length) {
-        filteredResults = results.filter(r => filteredPrices.includes(r.price));
-      }
-      
-      const total = filteredPrices.reduce((sum, price) => sum + price, 0);
-      avgPrice = Math.round(total / filteredPrices.length);
-      maxPrice = Math.max(...filteredPrices);
-      minPrice = Math.min(...filteredPrices);
-      
-      console.log(`📊 統計: 平均${avgPrice}円, 最高${maxPrice}円, 最低${minPrice}円`);
-    }
-    
-    return {
-      query,
-      results: filteredResults,
-      count: filteredResults.length,
-      avgPrice,
-      maxPrice,
-      minPrice,
-      originalCount: results.length // フィルタ前の件数
-    };
+    return await parseAucfanResults(html, query);
     
   } catch (error) {
     console.error('❌ スクレイピングエラー:', error.message);
     
-    // より詳細なエラー情報
-    if (error.response) {
-      console.error('- レスポンスステータス:', error.response.status);
-      console.error('- レスポンスヘッダー:', error.response.headers);
+    // ログインエラーの場合は再試行しない
+    if (error.message.includes('ログイン')) {
+      throw error;
     }
     
     throw new Error(`オークファンの相場取得に失敗しました: ${error.message}`);
   }
+}
+
+/**
+ * オークファンの検索結果HTMLを解析
+ */
+async function parseAucfanResults(html, query) {
+  console.log(`📄 HTML長: ${html.length}文字`);
+  
+  // Cheerioでパース
+  const $ = cheerio.load(html);
+  
+  const results = [];
+  
+  // プレミアム会員向けのセレクタパターン（ログイン後のHTML構造）
+  const selectors = [
+    // プレミアム会員用のセレクタ
+    '.premium-result-item',
+    '.member-result-item',
+    '.search-result-premium',
+    '.product-list-item',
+    '.result-product-item',
+    // 一般的なセレクタ
+    '.js-product',
+    '.js-item',
+    '.product-item',
+    '.item-data',
+    '.result-item',
+    '.search-result-item',
+    '.auction-item',
+    '.product-box',
+    '.item-box',
+    // テーブル形式
+    'tr.product-row',
+    'tr[class*="item"]',
+    'tbody tr',
+    // フォールバック用
+    'div[class*="item"]',
+    'li[class*="product"]',
+    'div[class*="product"]'
+  ];
+  
+  for (const selector of selectors) {
+    console.log(`🔍 セレクタ試行: ${selector}`);
+    
+    $(selector).each((index, element) => {
+      if (results.length >= 100) return false; // 最大100件まで収集
+      
+      const $item = $(element);
+      
+      // タイトル取得（複数パターン）
+      let title = '';
+      const titleSelectors = [
+        'h3', '.title', '.product-title', '.item-title', '.auction-title',
+        'a[title]', '.product-name', '.item-name', '.auction-name',
+        '.result-title', '[class*="title"]'
+      ];
+      
+      for (const titleSelector of titleSelectors) {
+        title = $item.find(titleSelector).first().text().trim();
+        if (title && title.length > 3) break;
+      }
+      
+      if (!title) {
+        title = $item.find('a').first().text().trim();
+      }
+      
+      // 価格取得（複数パターン）
+      let priceText = '';
+      const priceSelectors = [
+        '.price', '.product-price', '.current-price', '.item-price',
+        '.auction-price', '.end-price', '.final-price', '.sold-price',
+        '[class*="price"]', 'td:contains("円")', 'span:contains("円")',
+        'div:contains("円")', '.yen', '.money'
+      ];
+      
+      for (const priceSelector of priceSelectors) {
+        priceText = $item.find(priceSelector).text();
+        if (priceText && priceText.includes('円')) break;
+      }
+      
+      const price = extractPrice(priceText);
+      
+      // 日付取得（より詳細に）
+      let date = '';
+      const dateSelectors = [
+        '.date', '.end-date', '.item-date', '.auction-date',
+        '.sell-date', '.sold-date', '[class*="date"]', '.time'
+      ];
+      
+      for (const dateSelector of dateSelectors) {
+        date = $item.find(dateSelector).first().text().trim();
+        if (date && (date.includes('/') || date.includes('-') || date.includes('月'))) break;
+      }
+      
+      // URL取得
+      let linkURL = $item.find('a').first().attr('href');
+      if (linkURL && !linkURL.startsWith('http')) {
+        linkURL = 'https://aucfan.com' + linkURL;
+      }
+      
+      // 有効なデータのみ追加
+      if (title && title.length > 2 && price > 0) {
+        results.push({
+          title: title.substring(0, 100),
+          price,
+          date,
+          url: linkURL || '',
+          imageURL: ''
+        });
+      }
+    });
+    
+    if (results.length > 0) {
+      console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
+      break;
+    }
+  }
+  
+  // より汎用的なHTMLパース（フォールバック）
+  if (results.length === 0) {
+    console.log('🔄 フォールバック検索を実行');
+    
+    $('*').each((index, element) => {
+      if (results.length >= 50) return false;
+      
+      const $el = $(element);
+      const text = $el.text();
+      
+      // 価格らしきパターンを検索（広告価格を除外）
+      if (text.match(/[\d,]+円/) && text.length < 500) {
+        const priceMatch = text.match(/([\d,]+)円/);
+        if (priceMatch) {
+          const price = extractPrice(priceMatch[1]);
+          if (price > 1000 && price < 10000000) { // 1000円〜1000万円の範囲
+            const nearbyLink = $el.closest('*').find('a').first();
+            const title = nearbyLink.text().trim() || text.substring(0, 50);
+            
+            // 広告関連のキーワードをチェック
+            const adKeywords = ['初月無料', '月額', 'プレミアム', '2200円', '998円'];
+            const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
+            
+            if (title.length > 3 && !hasAdKeyword) {
+              results.push({
+                title,
+                price,
+                date: '',
+                url: '',
+                imageURL: ''
+              });
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  console.log(`✅ 取得件数: ${results.length}件（フィルタ前）`);
+  
+  // 最新データに限定し、異常値を除外
+  const filteredResults = filterRecentAndValidPrices(results);
+  
+  // 統計情報を計算
+  let avgPrice = 0;
+  let maxPrice = 0;
+  let minPrice = 0;
+  
+  if (filteredResults.length > 0) {
+    const prices = filteredResults.map(r => r.price);
+    const total = prices.reduce((sum, price) => sum + price, 0);
+    avgPrice = Math.round(total / prices.length);
+    maxPrice = Math.max(...prices);
+    minPrice = Math.min(...prices);
+    
+    console.log(`📊 最終統計: 平均${avgPrice}円, 最高${maxPrice}円, 最低${minPrice}円`);
+  }
+  
+  return {
+    query,
+    results: filteredResults,
+    count: filteredResults.length,
+    avgPrice,
+    maxPrice,
+    minPrice,
+    originalCount: results.length,
+    isLoggedIn: true
+  };
 }
 
 /**
@@ -381,8 +542,8 @@ async function processQuery(modelNumber, currentPrice) {
     // 1秒待機
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // オークファンから相場を取得
-    const result = await scrapeAucfan(modelNumber);
+    // オークファンから相場を取得（ログイン版）
+    const result = await scrapeAucfanWithLogin(modelNumber);
     
     // 仕入れ判定を追加
     const recommendation = evaluatePurchase(currentPrice, result.avgPrice, result.count);
@@ -444,6 +605,26 @@ app.post('/api/search', async (req, res) => {
     res.status(500).json({
       error: error.message
     });
+  }
+});
+
+// ログイン状態確認エンドポイント
+app.get('/api/login-status', (req, res) => {
+  res.json({
+    isLoggedIn,
+    loginAttempts,
+    hasCredentials: !!(AUCFAN_LOGIN.email && AUCFAN_LOGIN.password),
+    lastLoginAttempt: lastLoginAttempt > 0 ? new Date(lastLoginAttempt).toISOString() : null
+  });
+});
+
+// 手動ログインエンドポイント
+app.post('/api/login', async (req, res) => {
+  try {
+    await loginToAucfan();
+    res.json({ success: true, message: 'ログインに成功しました' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -511,11 +692,11 @@ if (hasLineConfig && line && client) {
     }
     
     let message = `📊 【${result.query}】相場分析結果\n\n`;
-    message += `🔍 検索結果: ${result.count}件`;
+    message += `🔍 検索結果: ${result.count}件（直近1ヶ月）`;
     if (result.originalCount && result.originalCount > result.count) {
-      message += `（${result.originalCount}件中、外れ値${result.originalCount - result.count}件除外）`;
+      message += `\n📝 フィルタ前: ${result.originalCount}件（ノイズ除去済み）`;
     }
-    message += '\n';
+    message += '\n\n';
     
     message += `💰 平均相場: ${result.avgPrice.toLocaleString()}円\n`;
     message += `📈 最高価格: ${result.maxPrice.toLocaleString()}円\n`;
@@ -530,7 +711,7 @@ if (hasLineConfig && line && client) {
     }
     
     if (result.results.length > 0) {
-      message += '📋 最近の取引例:\n';
+      message += '📋 最近の取引例（直近順）:\n';
       const maxDisplay = Math.min(3, result.results.length);
       
       for (let i = 0; i < maxDisplay; i++) {
@@ -547,6 +728,7 @@ if (hasLineConfig && line && client) {
       }
     }
     
+    message += '\n✅ オークファンプレミアム会員データ使用';
     message += '\n💡 使用方法:\n型番と価格を入力してください\n例:\niPhone 13 Pro\n80000';
     
     return message;
@@ -562,7 +744,7 @@ if (hasLineConfig && line && client) {
     try {
       await client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '🔍 相場を検索中です...\nしばらくお待ちください。'
+        text: '🔍 オークファンプレミアムで相場を検索中です...\nしばらくお待ちください。'
       });
       
       const parseResult = parseMessage(messageText);
@@ -593,7 +775,9 @@ if (hasLineConfig && line && client) {
       
       let errorMsg = `❌ 相場情報の取得に失敗しました:\n${error.message}`;
       
-      if (error.message.includes('文字化け') || error.message.includes('encode')) {
+      if (error.message.includes('ログイン')) {
+        errorMsg += '\n\n🔐 オークファンアカウントの認証に問題があります。管理者にお問い合わせください。';
+      } else if (error.message.includes('文字化け') || error.message.includes('encode')) {
         errorMsg += '\n\n💡 日本語商品名の場合は型番での検索をお試しください';
       }
       
@@ -646,25 +830,34 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
+    version: '3.0.0',
     lineBot: !!(hasLineConfig && client),
-    features: ['outlier_filtering', 'improved_scraping', 'japanese_encoding']
+    aucfanLogin: isLoggedIn,
+    features: [
+      'aucfan_premium_login',
+      'recent_data_filtering',
+      'ad_content_removal',
+      'statistical_outlier_detection'
+    ]
   });
 });
 
 // ルートパス
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'オークファン相場検索API v2.0',
+    message: 'オークファン相場検索API v3.0（プレミアム会員版）',
     status: 'running',
+    loginStatus: isLoggedIn ? 'ログイン済み' : '未ログイン',
     improvements: [
-      '✅ 異常値（新品等）自動除外',
-      '✅ 日本語クエリ対応強化', 
-      '✅ セレクタパターン大幅拡張',
-      '✅ エラーハンドリング強化'
+      '✅ オークファンプレミアム会員ログイン機能',
+      '✅ 広告・ノイズデータ自動除外',
+      '✅ 直近1ヶ月・最新20件データに限定',
+      '✅ 統計的異常値検出・除外'
     ],
     endpoints: [
       'POST /api/search - 相場検索API',
+      'GET /api/login-status - ログイン状態確認',
+      'POST /api/login - 手動ログイン',
       'POST /webhook - LINE Bot webhook (if enabled)',
       'GET /health - ヘルスチェック'
     ],
@@ -691,17 +884,24 @@ app.listen(PORT, () => {
     console.log('✅ LINE Bot設定完了');
   } else {
     console.log('📱 LINE Bot機能は無効です（環境変数が設定されていません）');
-    if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
-      console.warn('⚠️  LINE_CHANNEL_ACCESS_TOKEN が設定されていません');
-    }
-    if (!process.env.LINE_CHANNEL_SECRET) {
-      console.warn('⚠️  LINE_CHANNEL_SECRET が設定されていません');
-    }
   }
   
-  console.log('🔧 改良点:');
-  console.log('- 異常値（新品等）フィルタリング機能');
-  console.log('- 日本語固有名詞エンコーディング強化');
-  console.log('- オークファン2024年版セレクタ対応');
-  console.log('- より詳細なエラー分析とデバッグ情報');
+  console.log('🔧 新機能:');
+  console.log('- オークファンプレミアム会員ログイン');
+  console.log('- 広告データ（初月無料2200円等）自動除外');
+  console.log('- 直近1ヶ月データに限定（過去30日）');
+  console.log('- 最新20件の成約相場を優先');
+  console.log('- 統計的外れ値の自動検出・除外');
+  
+  // 環境変数チェック
+  if (hasLineConfig && client) {
+    console.log('✅ LINE Bot設定完了');
+  }
+  
+  if (AUCFAN_LOGIN.email && AUCFAN_LOGIN.password) {
+    console.log('✅ オークファンログイン情報設定済み');
+  } else {
+    console.warn('⚠️  AUCFAN_EMAIL, AUCFAN_PASSWORD が設定されていません');
+    console.warn('⚠️  プレミアム会員機能を使用するには環境変数の設定が必要です');
+  }
 });
