@@ -1,7 +1,20 @@
 require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
-const { processQuery } = require('./scrape');
+// 既存のscrape.jsファイルを読み込み（ファイル名を確認）
+let scrapeModule;
+try {
+  scrapeModule = require('./scrape');
+} catch (e) {
+  try {
+    scrapeModule = require('./scrape.js');
+  } catch (e2) {
+    console.error('❌ scrapeモジュールが見つかりません。scrape.jsファイルを作成してください。');
+    process.exit(1);
+  }
+}
+
+const { processQuery } = scrapeModule;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
