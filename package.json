@@ -1,15 +1,34 @@
 {
-  "name": "go-nogo-scraper",
+  "name": "aucfan-line-bot",
   "version": "1.0.0",
-  "type": "module",
+  "description": "オークファン相場検索LINE Bot",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "dev": "nodemon server.js",
+    "test": "node test.js"
   },
- "dependencies": {
-  "axios": "^1.6.8",
-  "dotenv": "^16.3.1",
-  "express": "^4.19.2",
-  "puppeteer-core": "^22.6.4",
-  "@sparticuz/chromium": "^120.0.0"
+  "dependencies": {
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
+    "express": "^4.18.2",
+    "iconv-lite": "^0.6.3",
+    "@line/bot-sdk": "^8.0.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "line-bot",
+    "aucfan",
+    "scraping",
+    "auction",
+    "price-check"
+  ],
+  "author": "",
+  "license": "MIT"
 }
