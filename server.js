@@ -1,25 +1,30 @@
 require('dotenv').config();
 const express = require('express');
-
-// LINE Bot関連の設定（存在する場合のみ）
-let line, client;
-try {
-  line = require('@line/bot-sdk');
-  const config = {
-    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-    channelSecret: process.env.LINE_CHANNEL_SECRET,
-  };
-  client = new line.Client(config);
-} catch (e) {
-  console.log('LINE SDK not found, running without LINE Bot functionality');
-}
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// スクレイピング機能をインライン実装（既存のscrape.jsが見つからない場合）
-const axios = require('axios');
-const cheerio = require('cheerio');
+// LINE Bot関連の設定（環境変数が設定されている場合のみ）
+let line, client;
+const hasLineConfig = process.env.LINE_CHANNEL_SECRET && process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+if (hasLineConfig) {
+  try {
+    line = require('@line/bot-sdk');
+    const config = {
+      channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+      channelSecret: process.env.LINE_CHANNEL_SECRET,
+    };
+    client = new line.Client(config);
+    console.log('✅ LINE Bot機能が有効です');
+  } catch (e) {
+    console.log('⚠️ LINE SDK not found, running without LINE Bot functionality');
+  }
+} else {
+  console.log('⚠️ LINE環境変数が設定されていません。API専用モードで起動します。');
+}
 
 // HTTPクライアントの設定
 const httpClient = axios.create({
@@ -234,8 +239,23 @@ async function processQuery(modelNumber, currentPrice) {
   }
 }
 
-// Express設定
-app.use(express.json());
+// LINE Webhook専用のミドルウェア設定
+if (hasLineConfig && line && client) {
+  // LINE Webhookエンドポイント（生のボディが必要）
+  app.use('/webhook', line.middleware({
+    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+    channelSecret: process.env.LINE_CHANNEL_SECRET,
+  }));
+}
+
+// その他のルートにはJSONパーサーを適用
+app.use((req, res, next) => {
+  if (req.path !== '/webhook') {
+    express.json()(req, res, next);
+  } else {
+    next();
+  }
+});
 app.use(express.urlencoded({ extended: true }));
 
 // API エンドポイント
@@ -261,8 +281,8 @@ app.post('/api/search', async (req, res) => {
   }
 });
 
-// LINE Bot機能（LINE SDKが利用可能な場合のみ）
-if (line && client) {
+// LINE Bot機能
+if (hasLineConfig && line && client) {
   /**
    * メッセージから型番と価格を抽出
    */
@@ -425,11 +445,6 @@ if (line && client) {
   }
 
   // LINE Webhook
-  app.use('/webhook', line.middleware({
-    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-    channelSecret: process.env.LINE_CHANNEL_SECRET,
-  }));
-
   app.post('/webhook', (req, res) => {
     Promise
       .all(req.body.events.map(handleEvent))
@@ -439,6 +454,14 @@ if (line && client) {
         res.status(500).end();
       });
   });
+} else {
+  // LINE機能が無効の場合のダミーエンドポイント
+  app.post('/webhook', (req, res) => {
+    res.json({ 
+      error: 'LINE Bot機能が有効ではありません',
+      message: 'LINE_CHANNEL_SECRET と LINE_CHANNEL_ACCESS_TOKEN を設定してください'
+    });
+  });
 }
 
 // ヘルスチェック
@@ -447,7 +470,7 @@ app.get('/health', (req, res) => {
     status: 'ok', 
     timestamp: new Date().toISOString(),
     version: '1.0.0',
-    lineBot: !!client
+    lineBot: !!(hasLineConfig && client)
   });
 });
 
@@ -477,16 +500,13 @@ app.get('/', (req, res) => {
 // サーバー起動
 app.listen(PORT, () => {
   console.log(`🚀 サーバーが起動しました: http://localhost:${PORT}`);
-  console.log(`📱 API URL: https://your-domain.com/api/search`);
+  console.log(`📱 API URL: https://go-nogo-scraper.onrender.com/api/search`);
   
-  if (client) {
-    console.log(`📱 LINE Bot Webhook URL: https://your-domain.com/webhook`);
+  if (hasLineConfig && client) {
+    console.log(`📱 LINE Bot Webhook URL: https://go-nogo-scraper.onrender.com/webhook`);
+    console.log('✅ LINE Bot設定完了');
   } else {
-    console.log('📱 LINE Bot機能は無効です（LINE SDKが見つかりません）');
-  }
-  
-  // 環境変数チェック
-  if (client) {
+    console.log('📱 LINE Bot機能は無効です（環境変数が設定されていません）');
     if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
       console.warn('⚠️  LINE_CHANNEL_ACCESS_TOKEN が設定されていません');
     }
