@@ -1,7 +1,7 @@
 {
   "name": "aucfan-line-bot",
   "version": "1.0.0",
-  "description": "オークファン相場検索LINE Bot",
+  "description": "IT式相場Bot",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
