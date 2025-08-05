@@ -91,9 +91,73 @@ function decodeResponse(buffer) {
 }
 
 /**
- * 価格データから異常値・広告データを除外し、最新データに限定
+ * 日付文字列を解析して現在からの経過月数を計算
  */
-function filterRecentAndValidPrices(results) {
+function parseDate(dateText) {
+  if (!dateText) return null;
+  
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  
+  let year, month, day;
+  
+  // 様々な日付フォーマットに対応
+  const patterns = [
+    /(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/, // 2024/01/15, 2024-01-15
+    /(\d{1,2})[-\/](\d{1,2})/, // 01/15, 01-15 (今年として扱う)
+    /(\d{1,2})月(\d{1,2})日/, // 1月15日
+    /(\d{4})年(\d{1,2})月(\d{1,2})日/, // 2024年1月15日
+    /(\d{4})年(\d{1,2})月/, // 2024年1月
+    /(\d{1,2})月/ // 1月 (今年として扱う)
+  ];
+  
+  for (const pattern of patterns) {
+    const match = dateText.match(pattern);
+    if (match) {
+      if (pattern.source.includes('\\d{4}')) {
+        // 年が含まれている場合
+        if (match[3]) {
+          // 年月日
+          year = parseInt(match[1]);
+          month = parseInt(match[2]);
+          day = parseInt(match[3]);
+        } else {
+          // 年月のみ
+          year = parseInt(match[1]);
+          month = parseInt(match[2]);
+          day = 1;
+        }
+      } else {
+        // 年が含まれていない場合は今年として扱う
+        year = currentYear;
+        if (match[2]) {
+          // 月日
+          month = parseInt(match[1]);
+          day = parseInt(match[2]);
+        } else {
+          // 月のみ
+          month = parseInt(match[1]);
+          day = 1;
+        }
+      }
+      break;
+    }
+  }
+  
+  if (year && month) {
+    const date = new Date(year, month - 1, day || 1);
+    const monthsAgo = (currentYear - year) * 12 + (currentMonth - month);
+    return { date, monthsAgo };
+  }
+  
+  return null;
+}
+
+/**
+ * 価格データから異常値・広告データを除外し、直近1年のデータに限定
+ */
+function filterValidPrices(results) {
   if (results.length === 0) return results;
   
   console.log(`🧹 フィルタリング開始: ${results.length}件`);
@@ -112,13 +176,8 @@ function filterRecentAndValidPrices(results) {
     
     const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
     
-    // 価格が異常に安い場合（500円未満）も除外
-    const isTooLowPrice = price < 500;
-    
-    // 価格が異常に高い場合（平均の10倍以上）も一旦チェック用にログ
-    if (price > 1000000) {
-      console.log(`💰 高額商品検出: ${title} (${price}円)`);
-    }
+    // 価格が異常に安い場合（300円未満）も除外
+    const isTooLowPrice = price < 300;
     
     if (hasAdKeyword || isTooLowPrice) {
       console.log(`🚫 除外: ${title} (${price}円) - ${hasAdKeyword ? '広告キーワード' : '低価格'}検出`);
@@ -130,12 +189,25 @@ function filterRecentAndValidPrices(results) {
   
   console.log(`🧹 広告フィルタ: ${results.length}件 → ${filtered.length}件`);
   
-  // 2. 最新20件に限定
-  const recentResults = filtered.slice(0, 20);
-  console.log(`📅 最新20件に限定: ${filtered.length}件 → ${recentResults.length}件`);
+  // 2. 直近1年のデータに限定（日付情報がある場合のみ）
+  const oneYearAgo = 12; // 12ヶ月前
+  const recentResults = filtered.filter(item => {
+    if (!item.date) return true; // 日付不明の場合は残す
+    
+    const parsedDate = parseDate(item.date);
+    if (!parsedDate) return true; // 解析失敗の場合は残す
+    
+    const isRecent = parsedDate.monthsAgo <= oneYearAgo;
+    if (!isRecent) {
+      console.log(`📅 古いデータ除外: ${item.title} (${parsedDate.monthsAgo}ヶ月前)`);
+    }
+    return isRecent;
+  });
   
-  // 3. 統計的外れ値を除外（四分位範囲法）
-  if (recentResults.length >= 5) {
+  console.log(`📅 直近1年フィルタ: ${filtered.length}件 → ${recentResults.length}件`);
+  
+  // 3. 統計的外れ値を除外（四分位範囲法）- より緩い条件に変更
+  if (recentResults.length >= 3) {
     const prices = recentResults.map(r => r.price).sort((a, b) => a - b);
     
     const q1Index = Math.floor(prices.length * 0.25);
@@ -144,9 +216,9 @@ function filterRecentAndValidPrices(results) {
     const q3 = prices[q3Index];
     const iqr = q3 - q1;
     
-    // 外れ値の閾値（少し緩めに設定）
-    const lowerBound = Math.max(500, q1 - (iqr * 1.5)); // 最低500円
-    const upperBound = q3 + (iqr * 1.5);
+    // 外れ値の閾値（かなり緩めに設定して多くのデータを残す）
+    const lowerBound = Math.max(300, q1 - (iqr * 2.0)); // 2.0倍で緩く
+    const upperBound = q3 + (iqr * 2.0); // 2.0倍で緩く
     
     const finalResults = recentResults.filter(item => {
       const inRange = item.price >= lowerBound && item.price <= upperBound;
@@ -159,7 +231,8 @@ function filterRecentAndValidPrices(results) {
     console.log(`📊 統計フィルタ: ${recentResults.length}件 → ${finalResults.length}件`);
     console.log(`📊 有効価格範囲: ${Math.round(lowerBound).toLocaleString()}円 〜 ${Math.round(upperBound).toLocaleString()}円`);
     
-    return finalResults.length > 0 ? finalResults : recentResults.slice(0, 10);
+    // 最終結果が少なすぎる場合はフィルタ前のデータを使用
+    return finalResults.length >= 3 ? finalResults : recentResults;
   }
   
   return recentResults;
@@ -226,7 +299,7 @@ async function parseAucfanResults(html, query) {
     console.log(`  - 要素数: ${elements.length}`);
     
     elements.each((index, element) => {
-      if (results.length >= 100) return false; // 最大100件まで収集
+      if (results.length >= 200) return false; // 最大200件まで収集（増量）
       
       const $item = $(element);
       const itemText = $item.text();
@@ -293,7 +366,7 @@ async function parseAucfanResults(html, query) {
           if (matches) {
             for (const match of matches) {
               const extractedPrice = extractPrice(match);
-              if (extractedPrice > 500 && extractedPrice < 10000000) {
+              if (extractedPrice > 300 && extractedPrice < 10000000) { // 下限を300円に変更
                 price = extractedPrice;
                 break;
               }
@@ -303,12 +376,24 @@ async function parseAucfanResults(html, query) {
         }
       }
       
-      // 日付取得
+      // 日付取得（強化版）
       let date = '';
       const dateText = $item.text();
-      const dateMatch = dateText.match(/(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}|\d{1,2}月\d{1,2}日)/);
-      if (dateMatch) {
-        date = dateMatch[1];
+      const datePatterns = [
+        /(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/,
+        /(\d{1,2}[-\/]\d{1,2})/,
+        /(\d{1,2}月\d{1,2}日)/,
+        /(\d{4}年\d{1,2}月\d{1,2}日)/,
+        /(\d{4}年\d{1,2}月)/,
+        /(\d{1,2}月)/
+      ];
+      
+      for (const pattern of datePatterns) {
+        const dateMatch = dateText.match(pattern);
+        if (dateMatch) {
+          date = dateMatch[1];
+          break;
+        }
       }
       
       // URL取得
@@ -321,11 +406,11 @@ async function parseAucfanResults(html, query) {
       const platform = containsMercari ? 'メルカリ' : 'ヤフオク';
       
       // 有効なデータのみ追加（条件を緩和）
-      if (title && title.length > 3 && price > 500) {
+      if (title && title.length > 3 && price > 300) { // 価格下限を300円に変更
         
         // デバッグ用ログ
-        if (results.length < 5) {
-          console.log(`📝 データ抽出成功 ${results.length + 1}: ${platform} - ${title.substring(0, 30)}... - ${price}円`);
+        if (results.length < 10) {
+          console.log(`📝 データ抽出成功 ${results.length + 1}: ${platform} - ${title.substring(0, 30)}... - ${price}円 - ${date}`);
         }
         
         results.push({
@@ -351,7 +436,7 @@ async function parseAucfanResults(html, query) {
     
     // メルカリとヤフオクを含む要素を直接検索（メルカリShopsのみ除外）
     $('*:contains("メルカリ"), *:contains("ヤフオク"), *:contains("Yahoo")').each((index, element) => {
-      if (results.length >= 50) return false;
+      if (results.length >= 100) return false;
       
       const $el = $(element);
       const text = $el.text();
@@ -371,7 +456,7 @@ async function parseAucfanResults(html, query) {
       
       for (const priceMatch of priceMatches) {
         const price = extractPrice(priceMatch);
-        if (price > 500 && price < 10000000) {
+        if (price > 300 && price < 10000000) { // 下限を300円に変更
           
           // タイトル取得（近くの要素から）
           let title = '';
@@ -443,8 +528,8 @@ async function parseAucfanResults(html, query) {
     }
   }
   
-  // 最新データに限定し、異常値を除外
-  const filteredResults = filterRecentAndValidPrices(results);
+  // 直近1年データに限定し、異常値を除外（20件制限を削除）
+  const filteredResults = filterValidPrices(results);
   
   // 統計情報を計算
   let avgPrice = 0;
@@ -594,7 +679,7 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
     return {
       emoji: "⚠️",
       decision: "判定困難", 
-      reason: "データ不足（3件未満）",
+      reason: `データ不足（${count}件のみ）`,
       totalCost: Math.round(auctionPrice * 1.155) // 手数料+消費税込み
     };
   }
@@ -712,6 +797,7 @@ function extractKeywords(productName) {
   // 重複除去
   return [...new Set(keywords)].slice(0, 3); // 最大3つのキーワード
 }
+
 /**
  * メイン処理関数
  */
@@ -903,21 +989,22 @@ if (hasLineConfig && line && client) {
       if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
       if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
       message += '\n';
-      message += `(メルカリShopsのみ除外)\n\n`;
+      message += `(直近1年・メルカリShopsは除外)\n\n`;
     }
     
-    // 最近の取引例（最大2件）
+    // 最近の取引例（最大3件に増加）
     if (result.results.length > 0) {
       message += '📋 最近の取引:\n';
-      const maxDisplay = Math.min(2, result.results.length);
+      const maxDisplay = Math.min(3, result.results.length);
       
       for (let i = 0; i < maxDisplay; i++) {
         const auction = result.results[i];
         let shortTitle = auction.title;
-        if (shortTitle.length > 20) {
-          shortTitle = shortTitle.substring(0, 20) + '...';
+        if (shortTitle.length > 25) {
+          shortTitle = shortTitle.substring(0, 25) + '...';
         }
-        message += `${auction.platform}: ${auction.price.toLocaleString()}円\n`;
+        const dateInfo = auction.date ? ` (${auction.date})` : '';
+        message += `${auction.platform}: ${auction.price.toLocaleString()}円${dateInfo}\n`;
       }
     }
     
@@ -934,7 +1021,7 @@ if (hasLineConfig && line && client) {
     try {
       await client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '🔍 相場検索中...\n(メルカリ・ヤフオクのみ対象)'
+        text: '🔍 相場検索中...\n(メルカリ・ヤフオク直近1年)'
       });
       
       const parseResult = parseMessage(messageText);
@@ -958,7 +1045,7 @@ if (hasLineConfig && line && client) {
         text: resultMessage
       });
       
-      console.log(`✅ 検索完了: ${parseResult.modelNumber}`);
+      console.log(`✅ 検索完了: ${parseResult.modelNumber} (${result.count}件取得)`);
       
     } catch (error) {
       console.error('❌ メッセージ処理エラー:', error);
@@ -1018,7 +1105,7 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    version: '2.2.0',
+    version: '2.3.0',
     lineBot: !!(hasLineConfig && client),
     aucfanLogin: false,
     features: [
@@ -1027,7 +1114,9 @@ app.get('/health', (req, res) => {
       'mercari_yahoo_auction_only',
       'mercari_shops_excluded_only',
       'ad_content_removal',
-      'statistical_outlier_detection'
+      'statistical_outlier_detection_relaxed',
+      'one_year_data_only',
+      'no_20_item_limit'
     ]
   });
 });
@@ -1035,14 +1124,16 @@ app.get('/health', (req, res) => {
 // ルートパス
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'オークファン相場検索API v2.2（手数料・消費税対応版）',
+    message: 'オークファン相場検索API v2.3（直近1年データ対応版）',
     status: 'running',
     improvements: [
       '✅ 日本語検索完全対応',
       '✅ 手数料5% + 消費税10%込み計算',
       '✅ メルカリ・ヤフオク限定検索',
-      '✅ 広告データ完全除外',
-      '✅ シンプルでわかりやすい判定'
+      '✅ 直近1年のデータのみ使用',
+      '✅ 20件制限を撤廃してより多くのデータを活用',
+      '✅ 統計的外れ値除去を緩和してデータ件数を確保',
+      '✅ 広告データ完全除外'
     ],
     endpoints: [
       'POST /api/search - 相場検索API',
@@ -1084,6 +1175,8 @@ app.listen(PORT, () => {
   console.log('- 日本語商品名検索対応（文字化け解決）');
   console.log('- 手数料5% + 消費税10%込み原価計算');
   console.log('- メルカリ・ヤフオク限定（Yahoo!ショッピング除外）');
+  console.log('- 直近1年データのみ使用（古いデータ除外）');
+  console.log('- 20件制限撤廃でより多くのデータを活用');
+  console.log('- 統計的外れ値除去を緩和（2.0倍に変更）');
   console.log('- 広告データ（初月無料等）完全除外');
-  console.log('- シンプルな色分け判定表示');
 });
