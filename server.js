@@ -117,7 +117,7 @@ function filterRecentAndValidPrices(results) {
     // 価格が異常に安い場合（500円未満）も除外
     const isTooLowPrice = price < 500;
     
-    // 価格が異常に高い場合（平均の10倍以上）も一旦チেック用にログ
+    // 価格が異常に高い場合（平均の10倍以上）も一旦チェック用にログ
     if (price > 1000000) {
       console.log(`💰 高額商品検出: ${title} (${price}円)`);
     }
@@ -167,92 +167,6 @@ function filterRecentAndValidPrices(results) {
   return recentResults;
 }
 
-/**
- * オークファンから相場情報を取得（日本語対応強化版）
- */
-async function scrapeAucfan(query) {
-  try {
-    console.log(`🔍 検索開始: ${query}`);
-    
-    // 日本語文字の場合は複数のエンコーディング方式を試す
-    let encodedQuery;
-    if (/[ひらがなカタカナ漢字]/.test(query)) {
-      // 日本語の場合、複数の方式でエンコード
-      console.log(`🔤 日本語クエリ検出: ${query}`);
-      
-      // 方式1: 標準的なURIエンコード
-      const standardEncoded = encodeURIComponent(query);
-      
-      // 方式2: 手動でUTF-8バイト列に変換
-      const utf8Bytes = Buffer.from(query, 'utf8');
-      const hexEncoded = Array.from(utf8Bytes)
-        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
-        .join('');
-      
-      // まず標準方式を試す
-      encodedQuery = standardEncoded;
-      console.log(`📝 エンコード結果: ${encodedQuery}`);
-    } else {
-      encodedQuery = encodeURIComponent(query);
-    }
-    
-    // メルカリ・ヤフオク限定の検索URL（オークファンの検索パラメータ）
-    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/?o=t1&s1=end_time&t=-1`;
-    console.log(`📍 URL: ${aucfanURL}`);
-    
-    // HTTPリクエストを送信（日本語対応のヘッダー追加）
-    const response = await httpClient.get(aucfanURL, {
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      headers: {
-        ...httpClient.defaults.headers,
-        'Accept-Charset': 'utf-8, shift_jis, euc-jp',
-        'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
-      },
-      validateStatus: function (status) {
-        return status >= 200 && status < 400;
-      }
-    });
-    
-    if (response.status !== 200) {
-      throw new Error(`HTTPエラー: ${response.status}`);
-    }
-    
-    // レスポンスを適切にデコード
-    const buffer = Buffer.from(response.data);
-    const html = decodeResponse(buffer);
-    
-    console.log(`📄 HTML長: ${html.length}文字`);
-    
-    // 日本語が正しく表示されているかチェック
-    if (/[ひらがなカタカナ漢字]/.test(query) && !html.includes(query)) {
-      console.log('⚠️ 検索クエリがHTMLに見つかりません。別のエンコーディングを試行...');
-      
-      // 方式2で再試行
-      const utf8Bytes = Buffer.from(query, 'utf8');
-      const hexEncoded = Array.from(utf8Bytes)
-        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
-        .join('');
-      
-      const retryURL = `https://aucfan.com/search1/q-${hexEncoded}/?o=t1&s1=end_time&t=-1`;
-      console.log(`🔄 再試行URL: ${retryURL}`);
-      
-      const retryResponse = await httpClient.get(retryURL, {
-        responseType: 'arraybuffer',
-        headers: {
-          ...httpClient.defaults.headers,
-          'Accept-Charset': 'utf-8, shift_jis, euc-jp',
-          'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
-        }
-      });
-      
-      if (retryResponse.status === 200) {
-        const retryBuffer = Buffer.from(retryResponse.data);
-        const retryHtml = decodeResponse(retryBuffer);
-        return await parseAucfanResults(retryHtml, query);
-      }
-    }
-    
 /**
  * オークファンの検索結果HTMLを解析（メルカリ・ヤフオク限定）
  */
@@ -492,6 +406,97 @@ async function parseAucfanResults(html, query) {
     isLoggedIn: false
   };
 }
+
+/**
+ * オークファンから相場情報を取得（日本語対応強化版）
+ */
+async function scrapeAucfan(query) {
+  try {
+    console.log(`🔍 検索開始: ${query}`);
+    
+    // 日本語文字の場合は複数のエンコーディング方式を試す
+    let encodedQuery;
+    if (/[ひらがなカタカナ漢字]/.test(query)) {
+      // 日本語の場合、複数の方式でエンコード
+      console.log(`🔤 日本語クエリ検出: ${query}`);
+      
+      // 方式1: 標準的なURIエンコード
+      const standardEncoded = encodeURIComponent(query);
+      
+      // 方式2: 手動でUTF-8バイト列に変換
+      const utf8Bytes = Buffer.from(query, 'utf8');
+      const hexEncoded = Array.from(utf8Bytes)
+        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
+        .join('');
+      
+      // まず標準方式を試す
+      encodedQuery = standardEncoded;
+      console.log(`📝 エンコード結果: ${encodedQuery}`);
+    } else {
+      encodedQuery = encodeURIComponent(query);
+    }
+    
+    // メルカリ・ヤフオク限定の検索URL（オークファンの検索パラメータ）
+    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/?o=t1&s1=end_time&t=-1`;
+    console.log(`📍 URL: ${aucfanURL}`);
+    
+    // HTTPリクエストを送信（日本語対応のヘッダー追加）
+    const response = await httpClient.get(aucfanURL, {
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      headers: {
+        ...httpClient.defaults.headers,
+        'Accept-Charset': 'utf-8, shift_jis, euc-jp',
+        'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
+      },
+      validateStatus: function (status) {
+        return status >= 200 && status < 400;
+      }
+    });
+    
+    if (response.status !== 200) {
+      throw new Error(`HTTPエラー: ${response.status}`);
+    }
+    
+    // レスポンスを適切にデコード
+    const buffer = Buffer.from(response.data);
+    const html = decodeResponse(buffer);
+    
+    console.log(`📄 HTML長: ${html.length}文字`);
+    
+    // 日本語が正しく表示されているかチェック
+    if (/[ひらがなカタカナ漢字]/.test(query) && !html.includes(query)) {
+      console.log('⚠️ 検索クエリがHTMLに見つかりません。別のエンコーディングを試行...');
+      
+      // 方式2で再試行
+      const utf8Bytes = Buffer.from(query, 'utf8');
+      const hexEncoded = Array.from(utf8Bytes)
+        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
+        .join('');
+      
+      const retryURL = `https://aucfan.com/search1/q-${hexEncoded}/?o=t1&s1=end_time&t=-1`;
+      console.log(`🔄 再試行URL: ${retryURL}`);
+      
+      const retryResponse = await httpClient.get(retryURL, {
+        responseType: 'arraybuffer',
+        headers: {
+          ...httpClient.defaults.headers,
+          'Accept-Charset': 'utf-8, shift_jis, euc-jp',
+          'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
+        }
+      });
+      
+      if (retryResponse.status === 200) {
+        const retryBuffer = Buffer.from(retryResponse.data);
+        const retryHtml = decodeResponse(retryBuffer);
+        return await parseAucfanResults(retryHtml, query);
+      }
+    }
+    
+    return await parseAucfanResults(html, query);
+    
+  } catch (error) {
+    console.error('❌ スクレイピングエラー:', error.message);
     
     // より詳細なエラー情報
     if (error.response) {
@@ -736,186 +741,4 @@ if (hasLineConfig && line && client) {
       message += `📱 内訳: `;
       if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
       if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
-      message += '\n\n';
-    }
-    
-    // 最近の取引例（最大2件）
-    if (result.results.length > 0) {
-      message += '📋 最近の取引:\n';
-      const maxDisplay = Math.min(2, result.results.length);
-      
-      for (let i = 0; i < maxDisplay; i++) {
-        const auction = result.results[i];
-        let shortTitle = auction.title;
-        if (shortTitle.length > 20) {
-          shortTitle = shortTitle.substring(0, 20) + '...';
-        }
-        message += `${auction.platform}: ${auction.price.toLocaleString()}円\n`;
-      }
-    }
-    
-    return message;
-  }
-
-  /**
-   * テキストメッセージを処理
-   */
-  async function handleTextMessage(event) {
-    const messageText = event.message.text;
-    const userId = event.source.userId;
-    
-    try {
-      await client.replyMessage(event.replyToken, {
-        type: 'text',
-        text: '🔍 相場検索中...\n(メルカリ・ヤフオクのみ対象)'
-      });
-      
-      const parseResult = parseMessage(messageText);
-      
-      if (parseResult.error) {
-        const errorMsg = `❌ ${parseResult.error}\n\n💡 正しい形式で入力してください:\n\n例1:\niPhone 13 Pro\n80000\n\n例2:\n型番: iPhone 13 Pro\nオークション価格: 80000`;
-        await client.pushMessage(userId, {
-          type: 'text',
-          text: errorMsg
-        });
-        return;
-      }
-      
-      console.log(`🔍 検索開始: ${parseResult.modelNumber}, ${parseResult.price}円`);
-      
-      const result = await processQuery(parseResult.modelNumber, parseResult.price);
-      const resultMessage = formatResultMessage(result);
-      
-      await client.pushMessage(userId, {
-        type: 'text',
-        text: resultMessage
-      });
-      
-      console.log(`✅ 検索完了: ${parseResult.modelNumber}`);
-      
-    } catch (error) {
-      console.error('❌ メッセージ処理エラー:', error);
-      
-      let errorMsg = `❌ 相場情報の取得に失敗しました:\n${error.message}`;
-      
-      if (error.message.includes('文字化け') || error.message.includes('encode')) {
-        errorMsg += '\n\n💡 日本語商品名の場合は型番での検索をお試しください';
-      }
-      
-      errorMsg += '\n\n時間をおいて再度お試しください。';
-      
-      try {
-        await client.pushMessage(userId, {
-          type: 'text',
-          text: errorMsg
-        });
-      } catch (pushError) {
-        console.error('❌ エラーメッセージ送信失敗:', pushError);
-      }
-    }
-  }
-
-  /**
-   * LINEイベントを処理
-   */
-  async function handleEvent(event) {
-    if (event.type !== 'message' || event.message.type !== 'text') {
-      return Promise.resolve(null);
-    }
-    
-    return handleTextMessage(event);
-  }
-
-  // LINE Webhook
-  app.post('/webhook', (req, res) => {
-    Promise
-      .all(req.body.events.map(handleEvent))
-      .then((result) => res.json(result))
-      .catch((err) => {
-        console.error('❌ Webhook処理エラー:', err);
-        res.status(500).end();
-      });
-  });
-} else {
-  // LINE機能が無効の場合のダミーエンドポイント
-  app.post('/webhook', (req, res) => {
-    res.json({ 
-      error: 'LINE Bot機能が有効ではありません',
-      message: 'LINE_CHANNEL_SECRET と LINE_CHANNEL_ACCESS_TOKEN を設定してください'
-    });
-  });
-}
-
-// ヘルスチェック
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    version: '2.1.0',
-    lineBot: !!(hasLineConfig && client),
-    aucfanLogin: false,
-    features: [
-      'ad_content_removal',
-      'recent_data_filtering',
-      'statistical_outlier_detection',
-      'improved_error_handling'
-    ]
-  });
-});
-
-// ルートパス
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'オークファン相場検索API v2.1（シンプル版）',
-    status: 'running',
-    improvements: [
-      '✅ 広告データ（初月無料2200円等）自動除外',
-      '✅ 異常値（新品等）自動除外',
-      '✅ 日本語クエリ対応強化', 
-      '✅ セレクタパターン大幅拡張',
-      '✅ エラーハンドリング強化'
-    ],
-    endpoints: [
-      'POST /api/search - 相場検索API',
-      'POST /webhook - LINE Bot webhook (if enabled)',
-      'GET /health - ヘルスチェック'
-    ],
-    usage: {
-      api: {
-        url: '/api/search',
-        method: 'POST',
-        body: {
-          modelNumber: 'iPhone 13 Pro',
-          auctionPrice: 80000
-        }
-      }
-    }
-  });
-});
-
-// サーバー起動
-app.listen(PORT, () => {
-  console.log(`🚀 サーバーが起動しました: http://localhost:${PORT}`);
-  console.log(`📱 API URL: https://go-nogo-scraper.onrender.com/api/search`);
-  
-  if (hasLineConfig && client) {
-    console.log(`📱 LINE Bot Webhook URL: https://go-nogo-scraper.onrender.com/webhook`);
-    console.log('✅ LINE Bot設定完了');
-  } else {
-    console.log('📱 LINE Bot機能は無効です（環境変数が設定されていません）');
-    if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
-      console.warn('⚠️  LINE_CHANNEL_ACCESS_TOKEN が設定されていません');
-    }
-    if (!process.env.LINE_CHANNEL_SECRET) {
-      console.warn('⚠️  LINE_CHANNEL_SECRET が設定されていません');
-    }
-  }
-  
-  console.log('🔧 改良点:');
-  console.log('- 広告データ（初月無料2200円等）完全除外');
-  console.log('- 異常値（新品等）統計的フィルタリング');
-  console.log('- 日本語固有名詞エンコーディング強化');
-  console.log('- オークファン2024年版セレクタ対応');
-  console.log('- より詳細なエラー分析とデバッグ情報');
-  console.log('- ログイン機能を無効化して安定性向上');
-});
+      message += '\n
