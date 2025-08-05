@@ -271,7 +271,7 @@ async function parseAucfanResults(html, query) {
   );
   console.log('🎯 関連するクラス名:', relevantClasses.slice(0, 20));
   
-  // プラットフォーム検出のデバッグ
+  // プラットフォーム検出のデバッグ（全要素を対象に）
   const mercariElements = $('*:contains("メルカリ")');
   const yahooElements = $('*:contains("ヤフオク"), *:contains("Yahoo")');
   const priceElements = $('*:contains("円")');
@@ -280,283 +280,244 @@ async function parseAucfanResults(html, query) {
   console.log(`💰 価格要素: ${priceElements.length}要素`);
   console.log(`🔗 リンク数: ${$('a').length}`);
   
-  if (mercariElements.length > 0) {
-    console.log('📱 メルカリ要素サンプル:');
-    mercariElements.slice(0, 3).each((index, element) => {
-      const $el = $(element);
-      const tagName = element.tagName.toLowerCase();
-      const className = $el.attr('class') || 'no-class';
-      console.log(`  ${index + 1}. <${tagName} class="${className}"> "${$el.text().trim().substring(0, 80)}..."`);
-    });
-  }
+  // 実際のデータが含まれている要素を直接検索
+  console.log('🔍 価格とプラットフォームの両方を含む要素を検索:');
   
-  if (yahooElements.length > 0) {
-    console.log('📱 ヤフオク要素サンプル:');
-    yahooElements.slice(0, 3).each((index, element) => {
-      const $el = $(element);
-      const tagName = element.tagName.toLowerCase();
-      const className = $el.attr('class') || 'no-class';
-      console.log(`  ${index + 1}. <${tagName} class="${className}"> "${$el.text().trim().substring(0, 80)}..."`);
-    });
-  }
+  // メルカリかつ価格を含む要素
+  const mercariWithPrice = $('*').filter(function() {
+    const text = $(this).text();
+    return text.includes('メルカリ') && text.includes('円') && !text.includes('メルカリShops');
+  });
   
-  // セレクタパターン
-  const selectors = [
-    'table.item_list tr',
-    'table[class*="list"] tr',
-    'table[class*="result"] tr',
-    'table[class*="product"] tr',
-    'table tr',
-    '.product-list-item',
-    '.search-result-item',
-    '.auction-item',
-    '.item-row',
-    '.result-row',
-    '[data-testid*="item"]',
-    '[data-testid*="product"]',
-    '[data-testid*="result"]',
-    '.productlist-item',
-    '.productlist-price',
-    '.search-result',
-    '.result-list tr',
-    '.js-product',
-    '.js-item',
-    '.product-item',
-    '.item-data',
-    '.result-item',
-    '.l-product-list-item',
-    '.product-box',
-    '.item-box',
-    '.result-product-item',
-    '.search-item',
-    '.auction-result',
-    'div[class*="item"]',
-    'div[class*="product"]',
-    'div[class*="result"]',
-    'li[class*="item"]',
-    'li[class*="product"]'
-  ];
+  // ヤフオクかつ価格を含む要素
+  const yahooWithPrice = $('*').filter(function() {
+    const text = $(this).text();
+    return (text.includes('ヤフオク') || text.includes('Yahoo')) && text.includes('円') && !text.includes('ショッピング');
+  });
   
-  // セレクタで試行
-  for (const selector of selectors) {
-    console.log(`🔍 セレクタ試行: ${selector}`);
+  console.log(`📊 メルカリ+価格要素: ${mercariWithPrice.length}件`);
+  console.log(`📊 ヤフオク+価格要素: ${yahooWithPrice.length}件`);
+  
+  // 直接的なデータ抽出アプローチ
+  console.log('🎯 直接データ抽出を開始:');
+  
+  // メルカリデータの抽出
+  mercariWithPrice.each((index, element) => {
+    if (results.length >= 100) return false;
     
-    const elements = $(selector);
-    console.log(`  - 要素数: ${elements.length}`);
+    const $el = $(element);
+    const text = $el.text();
     
-    if (elements.length === 0) continue;
+    // メルカリShopsは除外
+    if (text.includes('メルカリShops') || text.includes('メルカリshops')) return true;
     
-    elements.slice(0, 3).each((sampleIndex, sampleElement) => {
-      const $sample = $(sampleElement);
-      const sampleText = $sample.text().trim().substring(0, 100);
-      console.log(`  サンプル${sampleIndex + 1}: "${sampleText}..."`);
-    });
+    // 価格抽出
+    const priceMatches = text.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
+    if (!priceMatches) return true;
     
-    elements.each((index, element) => {
-      if (results.length >= 200) return false;
-      
-      const $item = $(element);
-      const itemText = $item.text();
-      const itemHtml = $item.html() || '';
-      
-      // テーブル行の場合、ヘッダー行をスキップ
-      if (element.tagName.toLowerCase() === 'tr') {
-        const firstCell = $item.find('td, th').first();
-        if (firstCell.length === 0 || firstCell.is('th')) {
-          return true;
-        }
+    let extractedPrice = 0;
+    for (const match of priceMatches) {
+      const price = extractPrice(match);
+      if (price > 300 && price < 10000000) {
+        extractedPrice = price;
+        break;
+      }
+    }
+    
+    if (extractedPrice === 0) return true;
+    
+    // タイトル抽出（階層的に探索）
+    let title = '';
+    const searchElements = [$el, $el.parent(), $el.parent().parent()];
+    
+    for (const $searchEl of searchElements) {
+      // リンクテキストを優先
+      const linkText = $searchEl.find('a').first().text().trim();
+      if (linkText && linkText.length > 10 && linkText.length < 200) {
+        title = linkText;
+        break;
       }
       
-      // プラットフォーム判定
-      const containsMercari = (itemText.includes('メルカリ') || 
-                             itemHtml.includes('mercari') || 
-                             itemHtml.includes('メルカリ') ||
-                             $item.find('*').text().includes('メルカリ')) &&
-                             !itemText.includes('メルカリShops') &&
-                             !itemText.includes('メルカリshops') &&
-                             !itemText.toLowerCase().includes('mercari shops');
-                             
-      const containsYahoo = itemText.includes('ヤフオク') || 
-                           itemText.includes('Yahoo') ||
-                           itemHtml.includes('yahoo') || 
-                           itemHtml.includes('ヤフオク') ||
-                           itemHtml.includes('Yahoo') ||
-                           $item.find('*').text().includes('ヤフオク') ||
-                           $item.find('*').text().includes('Yahoo');
+      // 要素テキストから商品名らしき部分を抽出
+      const fullText = $searchEl.text().trim();
+      // 改行や複数スペースで分割
+      const textParts = fullText.split(/[\n\r]+|\s{2,}/).map(part => part.trim());
       
-      const containsShopping = itemText.includes('ショッピング') ||
-                              itemHtml.includes('shopping') ||
-                              itemHtml.includes('ショッピング');
-      
-      if ((!containsMercari && !containsYahoo) || containsShopping) {
-        return true;
-      }
-      
-      // タイトル取得
-      let title = '';
-      
-      if (element.tagName.toLowerCase() === 'tr') {
-        const cells = $item.find('td');
-        
-        cells.each((cellIndex, cell) => {
-          const $cell = $(cell);
-          const cellText = $cell.text().trim();
-          const cellLink = $cell.find('a').text().trim();
-          
-          if (cellLink && cellLink.length > 10 && cellLink.length < 200) {
-            title = cellLink;
-            return false;
-          } else if (cellText && cellText.length > 10 && cellText.length < 200 && 
-                    !cellText.match(/^\d+[円,]/) && 
-                    !cellText.match(/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/) && 
-                    !cellText.match(/^(メルカリ|ヤフオク|Yahoo)$/)) {
-            title = cellText;
-            return false;
-          }
-        });
-      }
-      
-      if (!title) {
-        const titleCandidates = [
-          $item.find('a').first().text().trim(),
-          $item.find('.title, .product-title, .item-title').text().trim(),
-          $item.find('h3, h4, h5').text().trim(),
-          $item.text().trim()
-        ];
-        
-        for (const candidate of titleCandidates) {
-          if (candidate && candidate.length > 10 && candidate.length < 200) {
-            title = candidate;
-            break;
-          }
-        }
-      }
-      
-      // 価格取得
-      let price = 0;
-      
-      if (element.tagName.toLowerCase() === 'tr') {
-        const cells = $item.find('td');
-        cells.each((cellIndex, cell) => {
-          const $cell = $(cell);
-          const cellText = $cell.text();
-          
-          if (cellText.includes('円')) {
-            const matches = cellText.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
-            if (matches) {
-              for (const match of matches) {
-                const extractedPrice = extractPrice(match);
-                if (extractedPrice > 300 && extractedPrice < 10000000) {
-                  price = extractedPrice;
-                  return false;
-                }
-              }
-            }
-          }
-        });
-      }
-      
-      if (price === 0) {
-        const priceTexts = [
-          $item.find('*:contains("円")').text(),
-          $item.text()
-        ];
-        
-        for (const priceText of priceTexts) {
-          if (priceText.includes('円')) {
-            const matches = priceText.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
-            if (matches) {
-              for (const match of matches) {
-                const extractedPrice = extractPrice(match);
-                if (extractedPrice > 300 && extractedPrice < 10000000) {
-                  price = extractedPrice;
-                  break;
-                }
-              }
-              if (price > 0) break;
-            }
-          }
-        }
-      }
-      
-      // 日付取得
-      let date = '';
-      const dateText = $item.text();
-      const datePatterns = [
-        /(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/,
-        /(\d{1,2}[-\/]\d{1,2})/,
-        /(\d{1,2}月\d{1,2}日)/,
-        /(\d{4}年\d{1,2}月\d{1,2}日)/,
-        /(\d{4}年\d{1,2}月)/,
-        /(\d{1,2}月)/
-      ];
-      
-      for (const pattern of datePatterns) {
-        const dateMatch = dateText.match(pattern);
-        if (dateMatch) {
-          date = dateMatch[1];
+      for (const part of textParts) {
+        if (part.length > 10 && part.length < 200 && 
+            !part.match(/^\d+[円,]/) && // 価格のみではない
+            !part.match(/^\d{4}[-\/]/) && // 日付のみではない
+            !part.match(/^(メルカリ|ヤフオク|Yahoo)$/) && // プラットフォーム名のみではない
+            !part.includes('初月無料') &&
+            !part.includes('プレミアム')) {
+          title = part;
           break;
         }
       }
       
-      // URL取得
-      let linkURL = $item.find('a').first().attr('href');
-      if (linkURL && !linkURL.startsWith('http')) {
-        linkURL = 'https://aucfan.com' + linkURL;
-      }
-      
-      const platform = containsMercari ? 'メルカリ' : 'ヤフオク';
-      
-      if (title && title.length > 5 && price > 300) {
-        if (results.length < 10) {
-          console.log(`📝 データ抽出成功 ${results.length + 1}: ${platform} - ${title.substring(0, 30)}... - ${price}円 - ${date} - セレクタ: ${selector}`);
-        }
-        
-        results.push({
-          title: title.substring(0, 100),
-          price,
-          date,
-          url: linkURL || '',
-          imageURL: '',
-          platform
-        });
-      }
-    });
-    
-    if (results.length > 0) {
-      console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
-      break;
+      if (title) break;
     }
-  }
-  
-  // フォールバック1: テーブル構造の詳細解析
-  if (results.length === 0) {
-    console.log('🔄 フォールバック1: テーブル構造の詳細解析');
     
-    const allTables = $('table');
-    allTables.each((tableIndex, table) => {
-      const $table = $(table);
-      const rows = $table.find('tr');
+    if (title) {
+      console.log(`📝 メルカリデータ取得 ${results.length + 1}: ${title.substring(0, 40)}... - ${extractedPrice}円`);
       
-      console.log(`📊 テーブル${tableIndex + 1}を解析中: ${rows.length}行`);
+      results.push({
+        title: title.substring(0, 100),
+        price: extractedPrice,
+        date: '',
+        url: '',
+        imageURL: '',
+        platform: 'メルカリ'
+      });
+    }
+  });
+  
+  // ヤフオクデータの抽出
+  yahooWithPrice.each((index, element) => {
+    if (results.length >= 100) return false;
+    
+    const $el = $(element);
+    const text = $el.text();
+    
+    // Yahoo!ショッピングは除外
+    if (text.includes('ショッピング') || text.includes('shopping')) return true;
+    
+    // 価格抽出
+    const priceMatches = text.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
+    if (!priceMatches) return true;
+    
+    let extractedPrice = 0;
+    for (const match of priceMatches) {
+      const price = extractPrice(match);
+      if (price > 300 && price < 10000000) {
+        extractedPrice = price;
+        break;
+      }
+    }
+    
+    if (extractedPrice === 0) return true;
+    
+    // タイトル抽出
+    let title = '';
+    const searchElements = [$el, $el.parent(), $el.parent().parent()];
+    
+    for (const $searchEl of searchElements) {
+      const linkText = $searchEl.find('a').first().text().trim();
+      if (linkText && linkText.length > 10 && linkText.length < 200) {
+        title = linkText;
+        break;
+      }
       
-      rows.each((rowIndex, row) => {
+      const fullText = $searchEl.text().trim();
+      const textParts = fullText.split(/[\n\r]+|\s{2,}/).map(part => part.trim());
+      
+      for (const part of textParts) {
+        if (part.length > 10 && part.length < 200 && 
+            !part.match(/^\d+[円,]/) &&
+            !part.match(/^\d{4}[-\/]/) &&
+            !part.match(/^(メルカリ|ヤフオク|Yahoo)$/) &&
+            !part.includes('初月無料') &&
+            !part.includes('プレミアム')) {
+          title = part;
+          break;
+        }
+      }
+      
+      if (title) break;
+    }
+    
+    if (title) {
+      console.log(`📝 ヤフオクデータ取得 ${results.length + 1}: ${title.substring(0, 40)}... - ${extractedPrice}円`);
+      
+      results.push({
+        title: title.substring(0, 100),
+        price: extractedPrice,
+        date: '',
+        url: '',
+        imageURL: '',
+        platform: 'ヤフオク'
+      });
+    }
+  });
+  
+  console.log(`✅ 直接抽出完了: ${results.length}件`);
+  
+  // 既存のセレクタベースの抽出は補完として実行
+  if (results.length === 0) {
+    console.log('🔄 セレクタベースの補完抽出を実行');
+    
+    const selectors = [
+      'table tr',
+      '.product-item',
+      '.search-result',
+      '.result-item',
+      'div[class*="item"]',
+      'li[class*="product"]'
+    ];
+    
+    for (const selector of selectors) {
+      console.log(`🔍 補完セレクタ試行: ${selector}`);
+      
+      const elements = $(selector);
+      console.log(`  - 要素数: ${elements.length}`);
+      
+      if (elements.length === 0) continue;
+      
+      elements.each((index, element) => {
         if (results.length >= 100) return false;
         
-        const $row = $(row);
-        const cells = $row.find('td');
+        const $item = $(element);
+        const itemText = $item.text();
         
-        if (cells.length === 0) return true;
+        // メルカリShopsのみ除外、価格必須
+        const containsMercariShops = itemText.includes('メルカリShops') ||
+                                    itemText.includes('メルカリshops');
         
-        const rowText = $row.text();
+        if (containsMercariShops || !itemText.includes('円')) {
+          return true;
+        }
         
-        const containsMercari = rowText.includes('メルカリ') && !rowText.includes('メルカリShops');
-        const containsYahoo = (rowText.includes('ヤフオク') || rowText.includes('Yahoo')) && !rowText.includes('ショッピング');
+        // タイトル抽出
+        let title = '';
+        if (element.tagName.toLowerCase() === 'tr') {
+          const cells = $item.find('td');
+          cells.each((cellIndex, cell) => {
+            const $cell = $(cell);
+            const cellText = $cell.text().trim();
+            const cellLink = $cell.find('a').text().trim();
+            
+            if (cellLink && cellLink.length > 10 && cellLink.length < 200) {
+              title = cellLink;
+              return false;
+            } else if (cellText && cellText.length > 10 && cellText.length < 200 && 
+                      !cellText.match(/^\d+[円,]/) && 
+                      !cellText.match(/^\d{4}[-\/]/) &&
+                      !cellText.match(/^(メルカリ|ヤフオク|Yahoo)$/)) {
+              title = cellText;
+              return false;
+            }
+          });
+        }
         
-        if (!containsMercari && !containsYahoo) return true;
+        if (!title) {
+          const titleCandidates = [
+            $item.find('a').first().text().trim(),
+            $item.find('.title, .product-title, .item-title').text().trim(),
+            $item.find('h3, h4, h5').text().trim(),
+            $item.text().trim()
+          ];
+          
+          for (const candidate of titleCandidates) {
+            if (candidate && candidate.length > 10 && candidate.length < 200) {
+              title = candidate;
+              break;
+            }
+          }
+        }
         
+        // 価格抽出
         let price = 0;
-        const priceMatches = rowText.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
+        const priceMatches = itemText.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
         if (priceMatches) {
           for (const match of priceMatches) {
             const extractedPrice = extractPrice(match);
@@ -567,29 +528,16 @@ async function parseAucfanResults(html, query) {
           }
         }
         
-        if (price === 0) return true;
+        // プラットフォーム判定
+        let platform = 'その他';
+        if (itemText.includes('メルカリ')) {
+          platform = 'メルカリ';
+        } else if (itemText.includes('ヤフオク') || itemText.includes('Yahoo')) {
+          platform = 'ヤフオク';
+        }
         
-        let title = '';
-        cells.each((cellIndex, cell) => {
-          const $cell = $(cell);
-          const cellText = $cell.text().trim();
-          const cellLink = $cell.find('a').text().trim();
-          
-          if (cellLink && cellLink.length > 10 && cellLink.length < 200) {
-            title = cellLink;
-            return false;
-          } else if (cellText && cellText.length > 10 && cellText.length < 200 && 
-                    !cellText.match(/^\d+[円,]/) && !cellText.match(/^\d{4}[-\/]/) &&
-                    !cellText.match(/^(メルカリ|ヤフオク|Yahoo)$/)) {
-            title = cellText;
-            return false;
-          }
-        });
-        
-        if (title) {
-          const platform = containsMercari ? 'メルカリ' : 'ヤフオク';
-          
-          console.log(`📝 フォールバック1取得: ${platform} - ${title.substring(0, 30)}... - ${price}円`);
+        if (title && title.length > 5 && price > 300) {
+          console.log(`📝 補完データ取得 ${results.length + 1}: ${platform} - ${title.substring(0, 30)}... - ${price}円`);
           
           results.push({
             title: title.substring(0, 100),
@@ -601,77 +549,85 @@ async function parseAucfanResults(html, query) {
           });
         }
       });
-    });
+      
+      if (results.length > 10) {
+        console.log(`✅ 補完セレクタ「${selector}」で追加取得、合計${results.length}件`);
+        break;
+      }
+    }
   }
   
-  // フォールバック2: 全要素検索
-  if (results.length === 0) {
-    console.log('🔄 フォールバック2: 全要素検索（最終手段）');
+  // フォールバック: 最も積極的な全文検索
+  if (results.length < 5) {
+    console.log('🔄 最終フォールバック: 全文検索で残りのデータを収集');
     
-    $('*:contains("メルカリ"), *:contains("ヤフオク"), *:contains("Yahoo")').each((index, element) => {
-      if (results.length >= 50) return false;
+    // HTMLを行ごとに分割して解析
+    const lines = html.split('\n');
+    const relevantLines = lines.filter(line => 
+      line.includes('円') && 
+      (line.includes('メルカリ') || line.includes('ヤフオク') || line.includes('Yahoo')) &&
+      !line.includes('メルカリShops')
+    );
+    
+    console.log(`📄 関連する行数: ${relevantLines.length}`);
+    
+    for (let i = 0; i < Math.min(relevantLines.length, 50) && results.length < 50; i++) {
+      const line = relevantLines[i];
       
-      const $el = $(element);
-      const text = $el.text();
+      // 価格抽出
+      const priceMatches = line.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
+      if (!priceMatches) continue;
       
-      if (text.includes('ショッピング') || 
-          text.includes('メルカリShops') || 
-          text.includes('メルカリshops') ||
-          text.toLowerCase().includes('mercari shops')) return true;
-      
-      if (!text.includes('円')) return true;
-      
-      const priceMatches = text.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
-      if (!priceMatches) return true;
-      
-      for (const priceMatch of priceMatches) {
-        const price = extractPrice(priceMatch);
-        if (price > 300 && price < 10000000) {
-          
-          let title = '';
-          const parent = $el.parent();
-          const grandParent = parent.parent();
-          
-          const titleCandidates = [
-            $el.find('a').text().trim(),
-            parent.find('a').text().trim(),
-            grandParent.find('a').text().trim(),
-            $el.text().trim(),
-            parent.text().trim()
-          ];
-          
-          for (const candidate of titleCandidates) {
-            if (candidate && 
-                candidate.length > 10 && 
-                candidate.length < 200 &&
-                !candidate.match(/^\d+[円,]/) && 
-                !candidate.match(/^(メルカリ|ヤフオク|Yahoo)$/) && 
-                !candidate.includes('初月無料') &&
-                !candidate.includes('プレミアム')) {
-              title = candidate;
-              break;
-            }
-          }
-          
-          if (title) {
-            const platform = text.includes('メルカリ') ? 'メルカリ' : 'ヤフオク';
-            
-            console.log(`📝 フォールバック2取得: ${platform} - ${title.substring(0, 30)}... - ${price}円`);
-            
-            results.push({
-              title: title.substring(0, 100),
-              price,
-              date: '',
-              url: '',
-              imageURL: '',
-              platform
-            });
-            
-            break;
-          }
+      let price = 0;
+      for (const match of priceMatches) {
+        const extractedPrice = extractPrice(match);
+        if (extractedPrice > 300 && extractedPrice < 10000000) {
+          price = extractedPrice;
+          break;
         }
       }
-    });
+      
+      if (price === 0) continue;
+      
+      // タイトル抽出（HTMLタグを除去）
+      let cleanLine = line.replace(/<[^>]*>/g, '').trim();
+      
+      // 複数の区切り文字で分割
+      const parts = cleanLine.split(/[|｜\t]+/).map(part => part.trim());
+      
+      let title = '';
+      for (const part of parts) {
+        if (part.length > 10 && part.length < 200 &&
+            !part.match(/^\d+[円,]/) &&
+            !part.match(/^\d{4}[-\/]/) &&
+            !part.match(/^(メルカリ|ヤフオク|Yahoo)$/) &&
+            !part.includes('初月無料') &&
+            !part.includes('プレミアム')) {
+          title = part;
+          break;
+        }
+      }
+      
+      // タイトルが見つからない場合は全体から抽出
+      if (!title && cleanLine.length > 20 && cleanLine.length < 300) {
+        title = cleanLine.substring(0, 100);
+      }
+      
+      if (title) {
+        const platform = line.includes('メルカリ') ? 'メルカリ' : 'ヤフオク';
+        
+        console.log(`📝 全文検索取得 ${results.length + 1}: ${platform} - ${title.substring(0, 40)}... - ${price}円`);
+        
+        results.push({
+          title: title.substring(0, 100),
+          price,
+          date: '',
+          url: '',
+          imageURL: '',
+          platform
+        });
+      }
+    }
   }
   
   console.log(`✅ 総取得件数: ${results.length}件（フィルタ前）`);
