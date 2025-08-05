@@ -232,16 +232,15 @@ async function parseAucfanResults(html, query) {
       const itemText = $item.text();
       const itemHtml = $item.html() || '';
       
-      // より柔軟なプラットフォーム判定
+      // より柔軟なプラットフォーム判定（メルカリShopsのみ除外）
       const containsMercari = (itemText.includes('メルカリ') || 
                              itemHtml.includes('mercari') || 
                              itemHtml.includes('メルカリ') ||
                              $item.find('*').text().includes('メルカリ')) &&
-                             // メルカリshopsを除外
+                             // メルカリShopsのみ除外（個人アカウントは含める）
                              !itemText.includes('メルカリShops') &&
                              !itemText.includes('メルカリshops') &&
-                             !itemHtml.includes('shops') &&
-                             !itemHtml.includes('Shops');
+                             !itemText.toLowerCase().includes('mercari shops');
                              
       const containsYahoo = itemText.includes('ヤフオク') || 
                            itemText.includes('Yahoo') ||
@@ -350,19 +349,18 @@ async function parseAucfanResults(html, query) {
   if (results.length === 0) {
     console.log('🔄 フォールバック検索を実行（より積極的）');
     
-    // メルカリとヤフオクを含む要素を直接検索（メルカリshops除外）
+    // メルカリとヤフオクを含む要素を直接検索（メルカリShopsのみ除外）
     $('*:contains("メルカリ"), *:contains("ヤフオク"), *:contains("Yahoo")').each((index, element) => {
       if (results.length >= 50) return false;
       
       const $el = $(element);
       const text = $el.text();
       
-      // メルカリshops、ショッピング除外
+      // メルカリShops、ショッピング除外（個人メルカリは含める）
       if (text.includes('ショッピング') || 
           text.includes('メルカリShops') || 
           text.includes('メルカリshops') ||
-          text.includes('shops') ||
-          text.includes('Shops')) return true;
+          text.toLowerCase().includes('mercari shops')) return true;
       
       // 価格を含む要素のみ
       if (!text.includes('円')) return true;
@@ -869,19 +867,7 @@ if (hasLineConfig && line && client) {
    */
   function formatResultMessage(result) {
     if (result.count === 0) {
-      let message = `❌ 「${result.query}」の相場が見つかりません\n\n`;
-      
-      // 類似商品情報があれば表示
-      if (result.similarProducts && result.similarProducts.length > 0) {
-        message += `💡 類似商品の相場:\n`;
-        result.similarProducts.forEach(similar => {
-          message += `${similar.query}: 平均${similar.avgPrice.toLocaleString()}円 (${similar.count}件)\n`;
-        });
-        message += '\n';
-      }
-      
-      message += `💡 型番を英数字で入力してみてください`;
-      return message;
+      return `❌ 「${result.query}」の相場が見つかりません\n\n💡 型番を英数字で入力してみてください`;
     }
     
     const { judgment } = result;
@@ -917,16 +903,7 @@ if (hasLineConfig && line && client) {
       if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
       if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
       message += '\n';
-      message += `(メルカリShops除外済み)\n\n`;
-    }
-    
-    // 類似商品情報
-    if (result.similarProducts && result.similarProducts.length > 0) {
-      message += `🔍 類似商品相場:\n`;
-      result.similarProducts.forEach(similar => {
-        message += `${similar.query}: ${similar.avgPrice.toLocaleString()}円\n`;
-      });
-      message += '\n';
+      message += `(メルカリShopsのみ除外)\n\n`;
     }
     
     // 最近の取引例（最大2件）
@@ -1048,6 +1025,7 @@ app.get('/health', (req, res) => {
       'japanese_support',
       'cost_calculation_with_fees',
       'mercari_yahoo_auction_only',
+      'mercari_shops_excluded_only',
       'ad_content_removal',
       'statistical_outlier_detection'
     ]
