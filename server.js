@@ -233,10 +233,15 @@ async function parseAucfanResults(html, query) {
       const itemHtml = $item.html() || '';
       
       // より柔軟なプラットフォーム判定
-      const containsMercari = itemText.includes('メルカリ') || 
+      const containsMercari = (itemText.includes('メルカリ') || 
                              itemHtml.includes('mercari') || 
                              itemHtml.includes('メルカリ') ||
-                             $item.find('*').text().includes('メルカリ');
+                             $item.find('*').text().includes('メルカリ')) &&
+                             // メルカリshopsを除外
+                             !itemText.includes('メルカリShops') &&
+                             !itemText.includes('メルカリshops') &&
+                             !itemHtml.includes('shops') &&
+                             !itemHtml.includes('Shops');
                              
       const containsYahoo = itemText.includes('ヤフオク') || 
                            itemText.includes('Yahoo') ||
@@ -345,15 +350,19 @@ async function parseAucfanResults(html, query) {
   if (results.length === 0) {
     console.log('🔄 フォールバック検索を実行（より積極的）');
     
-    // メルカリとヤフオクを含む要素を直接検索
+    // メルカリとヤフオクを含む要素を直接検索（メルカリshops除外）
     $('*:contains("メルカリ"), *:contains("ヤフオク"), *:contains("Yahoo")').each((index, element) => {
       if (results.length >= 50) return false;
       
       const $el = $(element);
       const text = $el.text();
       
-      // ショッピング除外
-      if (text.includes('ショッピング')) return true;
+      // メルカリshops、ショッピング除外
+      if (text.includes('ショッピング') || 
+          text.includes('メルカリShops') || 
+          text.includes('メルカリshops') ||
+          text.includes('shops') ||
+          text.includes('Shops')) return true;
       
       // 価格を含む要素のみ
       if (!text.includes('円')) return true;
@@ -579,7 +588,7 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
       emoji: "❌",
       decision: "判定不可",
       reason: "相場データなし",
-      totalCost: 0
+      totalCost: auctionPrice // 最低でもオークション価格
     };
   }
   
@@ -588,12 +597,12 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
       emoji: "⚠️",
       decision: "判定困難", 
       reason: "データ不足（3件未満）",
-      totalCost: 0
+      totalCost: Math.round(auctionPrice * 1.155) // 手数料+消費税込み
     };
   }
   
   // 総原価計算：オークション価格 × 1.05（手数料5%） × 1.10（消費税10%）
-  const totalCost = Math.round(auctionPrice * 1.05 * 1.10);
+  const totalCost = Math.round(auctionPrice * 1.155); // 1.05 * 1.10 = 1.155
   const profit = avgPrice - totalCost;
   const profitRate = Math.round((profit / totalCost) * 100);
   
@@ -629,6 +638,83 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
 }
 
 /**
+ * 商品名から類似商品も検索（オプション機能）
+ */
+async function searchSimilarProducts(originalQuery) {
+  console.log(`🔄 類似商品検索: ${originalQuery}`);
+  
+  const similarResults = [];
+  
+  // 商品名から重要なキーワードを抽出
+  const keywords = extractKeywords(originalQuery);
+  
+  for (const keyword of keywords) {
+    if (keyword === originalQuery) continue; // 元の検索を除外
+    
+    try {
+      console.log(`🔍 類似検索: ${keyword}`);
+      const result = await scrapeAucfan(keyword);
+      
+      if (result.count > 0) {
+        similarResults.push({
+          query: keyword,
+          count: result.count,
+          avgPrice: result.avgPrice
+        });
+      }
+      
+      // APIの負荷を避けるため1秒待機
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+    } catch (error) {
+      console.log(`⚠️ 類似検索エラー (${keyword}):`, error.message);
+    }
+  }
+  
+  return similarResults;
+}
+
+/**
+ * 商品名から重要なキーワードを抽出
+ */
+function extractKeywords(productName) {
+  const keywords = [];
+  
+  // 基本的なキーワード抽出ロジック
+  const words = productName.split(/[\s\-_\+\/]+/);
+  
+  // ブランド名パターン
+  const brands = ['LOUIS VUITTON', 'ルイヴィトン', 'CHANEL', 'シャネル', 'HERMES', 'エルメス', 'GUCCI', 'グッチ', 'PRADA', 'プラダ'];
+  const brandMatch = brands.find(brand => productName.toUpperCase().includes(brand.toUpperCase()));
+  
+  // 商品カテゴリパターン
+  const categories = ['バッグ', 'bag', '財布', 'wallet', '時計', 'watch', 'iPhone', 'iPad'];
+  const categoryMatch = categories.find(category => productName.toLowerCase().includes(category.toLowerCase()));
+  
+  // ブランド + カテゴリの組み合わせ
+  if (brandMatch && categoryMatch) {
+    keywords.push(`${brandMatch} ${categoryMatch}`);
+  }
+  
+  // 型番らしきパターン（英数字の組み合わせ）
+  const modelPattern = /[A-Z0-9]{3,}/g;
+  const models = productName.match(modelPattern);
+  if (models) {
+    keywords.push(...models);
+  }
+  
+  // 重要な単語（3文字以上）
+  const importantWords = words.filter(word => 
+    word.length >= 3 && 
+    !['the', 'and', 'for', 'with'].includes(word.toLowerCase())
+  );
+  
+  keywords.push(...importantWords.slice(0, 2)); // 最大2つまで
+  
+  // 重複除去
+  return [...new Set(keywords)].slice(0, 3); // 最大3つのキーワード
+}
+/**
  * メイン処理関数
  */
 async function processQuery(modelNumber, auctionPrice) {
@@ -639,14 +725,25 @@ async function processQuery(modelNumber, auctionPrice) {
     // オークファンから相場を取得
     const result = await scrapeAucfan(modelNumber);
     
+    // 類似商品検索（データが少ない場合のみ）
+    let similarProducts = [];
+    if (result.count < 5) {
+      console.log('📊 データ件数が少ないため類似商品を検索');
+      try {
+        similarProducts = await searchSimilarProducts(modelNumber);
+      } catch (error) {
+        console.log('⚠️ 類似商品検索をスキップ:', error.message);
+      }
+    }
+    
     // 仕入れ判定を追加（手数料・消費税込み）
     const judgment = evaluatePurchase(auctionPrice, result.avgPrice, result.count);
     
-    // 原価計算詳細
+    // 原価計算詳細（修正版）
     const handlingFee = Math.round(auctionPrice * 0.05); // 手数料5%
     const subtotal = auctionPrice + handlingFee;
     const consumptionTax = Math.round(subtotal * 0.10); // 消費税10%
-    const totalCost = judgment.totalCost;
+    const totalCost = subtotal + consumptionTax; // 正しい総原価計算
     const profit = result.avgPrice - totalCost;
     const profitRate = result.avgPrice > 0 ? Math.round(((result.avgPrice - totalCost) / totalCost) * 100) : 0;
     
@@ -656,9 +753,13 @@ async function processQuery(modelNumber, auctionPrice) {
       handlingFee,
       consumptionTax,
       totalCost,
-      judgment,
+      judgment: {
+        ...judgment,
+        totalCost // judgmentの中のtotalCostも更新
+      },
       profit,
-      profitRate
+      profitRate,
+      similarProducts
     };
     
   } catch (error) {
@@ -768,7 +869,19 @@ if (hasLineConfig && line && client) {
    */
   function formatResultMessage(result) {
     if (result.count === 0) {
-      return `❌ 「${result.query}」の相場が見つかりません\n\n💡 型番を英数字で入力してみてください`;
+      let message = `❌ 「${result.query}」の相場が見つかりません\n\n`;
+      
+      // 類似商品情報があれば表示
+      if (result.similarProducts && result.similarProducts.length > 0) {
+        message += `💡 類似商品の相場:\n`;
+        result.similarProducts.forEach(similar => {
+          message += `${similar.query}: 平均${similar.avgPrice.toLocaleString()}円 (${similar.count}件)\n`;
+        });
+        message += '\n';
+      }
+      
+      message += `💡 型番を英数字で入力してみてください`;
+      return message;
     }
     
     const { judgment } = result;
@@ -803,7 +916,17 @@ if (hasLineConfig && line && client) {
       message += `📱 内訳: `;
       if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
       if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
-      message += '\n\n';
+      message += '\n';
+      message += `(メルカリShops除外済み)\n\n`;
+    }
+    
+    // 類似商品情報
+    if (result.similarProducts && result.similarProducts.length > 0) {
+      message += `🔍 類似商品相場:\n`;
+      result.similarProducts.forEach(similar => {
+        message += `${similar.query}: ${similar.avgPrice.toLocaleString()}円\n`;
+      });
+      message += '\n';
     }
     
     // 最近の取引例（最大2件）
