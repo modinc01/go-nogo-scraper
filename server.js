@@ -28,8 +28,8 @@ if (hasLineConfig) {
 
 // HTTPクライアントの設定（リダイレクト対応）
 const httpClient = axios.create({
-  timeout: 15000, // タイムアウトを短縮
-  maxRedirects: 3, // リダイレクト回数を制限
+  timeout: 15000,
+  maxRedirects: 3,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -48,7 +48,6 @@ const httpClient = axios.create({
 function extractPrice(priceText) {
   if (!priceText) return 0;
   
-  // 「円」や「,」「￥」などを除去して数字のみ抽出
   const numStr = priceText.replace(/[^\d]/g, '');
   const price = parseInt(numStr);
   return isNaN(price) ? 0 : price;
@@ -59,7 +58,6 @@ function extractPrice(priceText) {
  */
 function decodeResponse(buffer) {
   try {
-    // UTF-8で試す
     const utf8Text = buffer.toString('utf8');
     if (!utf8Text.includes('�')) {
       return utf8Text;
@@ -68,24 +66,20 @@ function decodeResponse(buffer) {
     // エラーの場合は続行
   }
 
-  // iconv-liteが利用可能な場合はShift_JISを試す
   try {
     const iconv = require('iconv-lite');
-    // まずShift_JISを試す
     const sjisText = iconv.decode(buffer, 'shift_jis');
     if (!sjisText.includes('�')) {
       return sjisText;
     }
     
-    // 次にEUC-JPを試す
     const eucText = iconv.decode(buffer, 'euc-jp');
     if (!eucText.includes('�')) {
       return eucText;
     }
     
-    return sjisText; // Shift_JISを優先
+    return sjisText;
   } catch (e) {
-    // iconv-liteが無い場合はUTF-8で強制変換
     return buffer.toString('utf8');
   }
 }
@@ -102,41 +96,34 @@ function parseDate(dateText) {
   
   let year, month, day;
   
-  // 様々な日付フォーマットに対応
   const patterns = [
-    /(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/, // 2024/01/15, 2024-01-15
-    /(\d{1,2})[-\/](\d{1,2})/, // 01/15, 01-15 (今年として扱う)
-    /(\d{1,2})月(\d{1,2})日/, // 1月15日
-    /(\d{4})年(\d{1,2})月(\d{1,2})日/, // 2024年1月15日
-    /(\d{4})年(\d{1,2})月/, // 2024年1月
-    /(\d{1,2})月/ // 1月 (今年として扱う)
+    /(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/,
+    /(\d{1,2})[-\/](\d{1,2})/,
+    /(\d{1,2})月(\d{1,2})日/,
+    /(\d{4})年(\d{1,2})月(\d{1,2})日/,
+    /(\d{4})年(\d{1,2})月/,
+    /(\d{1,2})月/
   ];
   
   for (const pattern of patterns) {
     const match = dateText.match(pattern);
     if (match) {
       if (pattern.source.includes('\\d{4}')) {
-        // 年が含まれている場合
         if (match[3]) {
-          // 年月日
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = parseInt(match[3]);
         } else {
-          // 年月のみ
           year = parseInt(match[1]);
           month = parseInt(match[2]);
           day = 1;
         }
       } else {
-        // 年が含まれていない場合は今年として扱う
         year = currentYear;
         if (match[2]) {
-          // 月日
           month = parseInt(match[1]);
           day = parseInt(match[2]);
         } else {
-          // 月のみ
           month = parseInt(match[1]);
           day = 1;
         }
@@ -167,7 +154,6 @@ function filterValidPrices(results) {
     const price = item.price;
     const title = item.title.toLowerCase();
     
-    // 広告関連のキーワードを含む商品を除外
     const adKeywords = [
       '初月無料', '月額', 'プレミアム', '会員', '登録', '2200円', '998円',
       '入会', 'オークファン', 'aucfan', '無料', 'free', '円/税込',
@@ -175,8 +161,6 @@ function filterValidPrices(results) {
     ];
     
     const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
-    
-    // 価格が異常に安い場合（300円未満）も除外
     const isTooLowPrice = price < 300;
     
     if (hasAdKeyword || isTooLowPrice) {
@@ -189,13 +173,13 @@ function filterValidPrices(results) {
   
   console.log(`🧹 広告フィルタ: ${results.length}件 → ${filtered.length}件`);
   
-  // 2. 直近1年のデータに限定（日付情報がある場合のみ）
-  const oneYearAgo = 12; // 12ヶ月前
+  // 2. 直近1年のデータに限定
+  const oneYearAgo = 12;
   const recentResults = filtered.filter(item => {
-    if (!item.date) return true; // 日付不明の場合は残す
+    if (!item.date) return true;
     
     const parsedDate = parseDate(item.date);
-    if (!parsedDate) return true; // 解析失敗の場合は残す
+    if (!parsedDate) return true;
     
     const isRecent = parsedDate.monthsAgo <= oneYearAgo;
     if (!isRecent) {
@@ -206,7 +190,7 @@ function filterValidPrices(results) {
   
   console.log(`📅 直近1年フィルタ: ${filtered.length}件 → ${recentResults.length}件`);
   
-  // 3. 統計的外れ値を除外（四分位範囲法）- より緩い条件に変更
+  // 3. 統計的外れ値を除外
   if (recentResults.length >= 3) {
     const prices = recentResults.map(r => r.price).sort((a, b) => a - b);
     
@@ -216,9 +200,8 @@ function filterValidPrices(results) {
     const q3 = prices[q3Index];
     const iqr = q3 - q1;
     
-    // 外れ値の閾値（かなり緩めに設定して多くのデータを残す）
-    const lowerBound = Math.max(300, q1 - (iqr * 2.0)); // 2.0倍で緩く
-    const upperBound = q3 + (iqr * 2.0); // 2.0倍で緩く
+    const lowerBound = Math.max(300, q1 - (iqr * 2.0));
+    const upperBound = q3 + (iqr * 2.0);
     
     const finalResults = recentResults.filter(item => {
       const inRange = item.price >= lowerBound && item.price <= upperBound;
@@ -231,7 +214,6 @@ function filterValidPrices(results) {
     console.log(`📊 統計フィルタ: ${recentResults.length}件 → ${finalResults.length}件`);
     console.log(`📊 有効価格範囲: ${Math.round(lowerBound).toLocaleString()}円 〜 ${Math.round(upperBound).toLocaleString()}円`);
     
-    // 最終結果が少なすぎる場合はフィルタ前のデータを使用
     return finalResults.length >= 3 ? finalResults : recentResults;
   }
   
@@ -244,15 +226,12 @@ function filterValidPrices(results) {
 async function parseAucfanResults(html, query) {
   console.log(`📄 HTML長: ${html.length}文字`);
   
-  // Cheerioでパース
   const $ = cheerio.load(html);
-  
   const results = [];
   
-  // HTMLの詳細構造をデバッグ出力
+  // HTML構造の詳細分析
   console.log('🔍 HTML構造詳細分析:');
   
-  // 実際のテーブル構造を分析
   const tables = $('table');
   console.log(`📊 テーブル数: ${tables.length}`);
   
@@ -262,7 +241,6 @@ async function parseAucfanResults(html, query) {
     console.log(`📊 テーブル${index + 1}: ${rows.length}行`);
     
     if (rows.length > 0) {
-      // 最初の数行をサンプル表示
       rows.slice(0, 3).each((rowIndex, row) => {
         const $row = $(row);
         const cells = $row.find('td, th');
@@ -293,52 +271,6 @@ async function parseAucfanResults(html, query) {
   );
   console.log('🎯 関連するクラス名:', relevantClasses.slice(0, 20));
   
-  // 2024年版オークファンの最新セレクタパターン（実際のHTML構造に基づく）
-  const selectors = [
-    // テーブルベースの検索（最優先）
-    'table.item_list tr', // オークファンの商品リストテーブル
-    'table[class*="list"] tr',
-    'table[class*="result"] tr',
-    'table[class*="product"] tr',
-    'table tr',
-    
-    // より具体的なセレクタ
-    '.product-list-item',
-    '.search-result-item',
-    '.auction-item',
-    '.item-row',
-    '.result-row',
-    
-    // Reactコンポーネント系
-    '[data-testid*="item"]',
-    '[data-testid*="product"]',
-    '[data-testid*="result"]',
-    
-    // 一般的なパターン
-    '.productlist-item',
-    '.productlist-price',
-    '.search-result',
-    '.result-list tr',
-    '.js-product',
-    '.js-item',
-    '.product-item',
-    '.item-data',
-    '.result-item',
-    '.l-product-list-item',
-    '.product-box',
-    '.item-box',
-    '.result-product-item',
-    '.search-item',
-    '.auction-result',
-    
-    // より広範囲なフォールバック
-    'div[class*="item"]',
-    'div[class*="product"]',
-    'div[class*="result"]',
-    'li[class*="item"]',
-    'li[class*="product"]'
-  ];
-  
   // プラットフォーム検出のデバッグ
   const mercariElements = $('*:contains("メルカリ")');
   const yahooElements = $('*:contains("ヤフオク"), *:contains("Yahoo")');
@@ -348,7 +280,6 @@ async function parseAucfanResults(html, query) {
   console.log(`💰 価格要素: ${priceElements.length}要素`);
   console.log(`🔗 リンク数: ${$('a').length}`);
   
-  // 実際のメルカリ・ヤフオク要素のサンプルを表示
   if (mercariElements.length > 0) {
     console.log('📱 メルカリ要素サンプル:');
     mercariElements.slice(0, 3).each((index, element) => {
@@ -369,7 +300,44 @@ async function parseAucfanResults(html, query) {
     });
   }
   
-  // より詳細なセレクタで試行
+  // セレクタパターン
+  const selectors = [
+    'table.item_list tr',
+    'table[class*="list"] tr',
+    'table[class*="result"] tr',
+    'table[class*="product"] tr',
+    'table tr',
+    '.product-list-item',
+    '.search-result-item',
+    '.auction-item',
+    '.item-row',
+    '.result-row',
+    '[data-testid*="item"]',
+    '[data-testid*="product"]',
+    '[data-testid*="result"]',
+    '.productlist-item',
+    '.productlist-price',
+    '.search-result',
+    '.result-list tr',
+    '.js-product',
+    '.js-item',
+    '.product-item',
+    '.item-data',
+    '.result-item',
+    '.l-product-list-item',
+    '.product-box',
+    '.item-box',
+    '.result-product-item',
+    '.search-item',
+    '.auction-result',
+    'div[class*="item"]',
+    'div[class*="product"]',
+    'div[class*="result"]',
+    'li[class*="item"]',
+    'li[class*="product"]'
+  ];
+  
+  // セレクタで試行
   for (const selector of selectors) {
     console.log(`🔍 セレクタ試行: ${selector}`);
     
@@ -378,7 +346,6 @@ async function parseAucfanResults(html, query) {
     
     if (elements.length === 0) continue;
     
-    // 最初の数要素をサンプル表示
     elements.slice(0, 3).each((sampleIndex, sampleElement) => {
       const $sample = $(sampleElement);
       const sampleText = $sample.text().trim().substring(0, 100);
@@ -386,7 +353,7 @@ async function parseAucfanResults(html, query) {
     });
     
     elements.each((index, element) => {
-      if (results.length >= 200) return false; // 最大200件まで収集
+      if (results.length >= 200) return false;
       
       const $item = $(element);
       const itemText = $item.text();
@@ -396,16 +363,15 @@ async function parseAucfanResults(html, query) {
       if (element.tagName.toLowerCase() === 'tr') {
         const firstCell = $item.find('td, th').first();
         if (firstCell.length === 0 || firstCell.is('th')) {
-          return true; // continue - ヘッダー行をスキップ
+          return true;
         }
       }
       
-      // より柔軟なプラットフォーム判定
+      // プラットフォーム判定
       const containsMercari = (itemText.includes('メルカリ') || 
                              itemHtml.includes('mercari') || 
                              itemHtml.includes('メルカリ') ||
                              $item.find('*').text().includes('メルカリ')) &&
-                             // メルカリShopsのみ除外
                              !itemText.includes('メルカリShops') &&
                              !itemText.includes('メルカリshops') &&
                              !itemText.toLowerCase().includes('mercari shops');
@@ -418,44 +384,38 @@ async function parseAucfanResults(html, query) {
                            $item.find('*').text().includes('ヤフオク') ||
                            $item.find('*').text().includes('Yahoo');
       
-      // Yahoo!ショッピング除外
       const containsShopping = itemText.includes('ショッピング') ||
                               itemHtml.includes('shopping') ||
                               itemHtml.includes('ショッピング');
       
-      // メルカリまたはヤフオクでない場合、またはショッピングの場合はスキップ
       if ((!containsMercari && !containsYahoo) || containsShopping) {
-        return true; // continue
+        return true;
       }
       
-      // タイトル取得（強化版）
+      // タイトル取得
       let title = '';
       
-      // テーブル行の場合は列ごとに確認
       if (element.tagName.toLowerCase() === 'tr') {
         const cells = $item.find('td');
         
-        // 各セルから商品名らしき情報を探す
         cells.each((cellIndex, cell) => {
           const $cell = $(cell);
           const cellText = $cell.text().trim();
           const cellLink = $cell.find('a').text().trim();
           
-          // 商品名候補の判定
           if (cellLink && cellLink.length > 10 && cellLink.length < 200) {
             title = cellLink;
-            return false; // break
+            return false;
           } else if (cellText && cellText.length > 10 && cellText.length < 200 && 
-                    !cellText.match(/^\d+[円,]/) && // 価格ではない
-                    !cellText.match(/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/) && // 日付ではない
-                    !cellText.match(/^(メルカリ|ヤフオク|Yahoo)$/)) { // プラットフォーム名のみではない
+                    !cellText.match(/^\d+[円,]/) && 
+                    !cellText.match(/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/) && 
+                    !cellText.match(/^(メルカリ|ヤフオク|Yahoo)$/)) {
             title = cellText;
-            return false; // break
+            return false;
           }
         });
       }
       
-      // 通常の方法でタイトル取得
       if (!title) {
         const titleCandidates = [
           $item.find('a').first().text().trim(),
@@ -472,10 +432,9 @@ async function parseAucfanResults(html, query) {
         }
       }
       
-      // 価格取得（強化版）
+      // 価格取得
       let price = 0;
       
-      // テーブル行の場合は各セルを確認
       if (element.tagName.toLowerCase() === 'tr') {
         const cells = $item.find('td');
         cells.each((cellIndex, cell) => {
@@ -489,7 +448,7 @@ async function parseAucfanResults(html, query) {
                 const extractedPrice = extractPrice(match);
                 if (extractedPrice > 300 && extractedPrice < 10000000) {
                   price = extractedPrice;
-                  return false; // break
+                  return false;
                 }
               }
             }
@@ -497,7 +456,6 @@ async function parseAucfanResults(html, query) {
         });
       }
       
-      // 通常の価格取得
       if (price === 0) {
         const priceTexts = [
           $item.find('*:contains("円")').text(),
@@ -519,8 +477,9 @@ async function parseAucfanResults(html, query) {
             }
           }
         }
+      }
       
-      // 日付取得（強化版）
+      // 日付取得
       let date = '';
       const dateText = $item.text();
       const datePatterns = [
@@ -546,13 +505,9 @@ async function parseAucfanResults(html, query) {
         linkURL = 'https://aucfan.com' + linkURL;
       }
       
-      // プラットフォーム判定
       const platform = containsMercari ? 'メルカリ' : 'ヤフオク';
       
-      // 有効なデータのみ追加（条件を緩和）
-      if (title && title.length > 5 && price > 300) { // タイトル長を5文字以上に変更
-        
-        // デバッグ用ログ（最初の10件のみ）
+      if (title && title.length > 5 && price > 300) {
         if (results.length < 10) {
           console.log(`📝 データ抽出成功 ${results.length + 1}: ${platform} - ${title.substring(0, 30)}... - ${price}円 - ${date} - セレクタ: ${selector}`);
         }
@@ -568,14 +523,13 @@ async function parseAucfanResults(html, query) {
       }
     });
     
-    // データが取得できた場合はループを抜ける
     if (results.length > 0) {
       console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
       break;
     }
   }
   
-  // フォールバック1: より積極的なテーブル解析
+  // フォールバック1: テーブル構造の詳細解析
   if (results.length === 0) {
     console.log('🔄 フォールバック1: テーブル構造の詳細解析');
     
@@ -592,17 +546,15 @@ async function parseAucfanResults(html, query) {
         const $row = $(row);
         const cells = $row.find('td');
         
-        if (cells.length === 0) return true; // ヘッダー行をスキップ
+        if (cells.length === 0) return true;
         
         const rowText = $row.text();
         
-        // メルカリ・ヤフオクの判定
         const containsMercari = rowText.includes('メルカリ') && !rowText.includes('メルカリShops');
         const containsYahoo = (rowText.includes('ヤフオク') || rowText.includes('Yahoo')) && !rowText.includes('ショッピング');
         
         if (!containsMercari && !containsYahoo) return true;
         
-        // 価格抽出
         let price = 0;
         const priceMatches = rowText.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
         if (priceMatches) {
@@ -617,7 +569,6 @@ async function parseAucfanResults(html, query) {
         
         if (price === 0) return true;
         
-        // タイトル抽出（セル単位で）
         let title = '';
         cells.each((cellIndex, cell) => {
           const $cell = $(cell);
@@ -653,27 +604,23 @@ async function parseAucfanResults(html, query) {
     });
   }
   
-  // フォールバック2: 最終手段 - 要素単位で全検索
+  // フォールバック2: 全要素検索
   if (results.length === 0) {
     console.log('🔄 フォールバック2: 全要素検索（最終手段）');
     
-    // メルカリとヤフオクを含む要素を直接検索
     $('*:contains("メルカリ"), *:contains("ヤフオク"), *:contains("Yahoo")').each((index, element) => {
       if (results.length >= 50) return false;
       
       const $el = $(element);
       const text = $el.text();
       
-      // 除外条件
       if (text.includes('ショッピング') || 
           text.includes('メルカリShops') || 
           text.includes('メルカリshops') ||
           text.toLowerCase().includes('mercari shops')) return true;
       
-      // 価格を含む要素のみ
       if (!text.includes('円')) return true;
       
-      // 価格抽出
       const priceMatches = text.match(/(\d{1,3}(?:,\d{3})*|\d+)円/g);
       if (!priceMatches) return true;
       
@@ -681,12 +628,10 @@ async function parseAucfanResults(html, query) {
         const price = extractPrice(priceMatch);
         if (price > 300 && price < 10000000) {
           
-          // タイトル取得（近くの要素から）
           let title = '';
           const parent = $el.parent();
           const grandParent = parent.parent();
           
-          // より広範囲でタイトルを探す
           const titleCandidates = [
             $el.find('a').text().trim(),
             parent.find('a').text().trim(),
@@ -696,12 +641,11 @@ async function parseAucfanResults(html, query) {
           ];
           
           for (const candidate of titleCandidates) {
-            // より詳細な商品名判定
             if (candidate && 
                 candidate.length > 10 && 
                 candidate.length < 200 &&
-                !candidate.match(/^\d+[円,]/) && // 価格のみではない
-                !candidate.match(/^(メルカリ|ヤフオク|Yahoo)$/) && // プラットフォーム名のみではない
+                !candidate.match(/^\d+[円,]/) && 
+                !candidate.match(/^(メルカリ|ヤフオク|Yahoo)$/) && 
                 !candidate.includes('初月無料') &&
                 !candidate.includes('プレミアム')) {
               title = candidate;
@@ -723,7 +667,7 @@ async function parseAucfanResults(html, query) {
               platform
             });
             
-            break; // 1つの要素から1つのアイテムのみ
+            break;
           }
         }
       }
@@ -732,16 +676,13 @@ async function parseAucfanResults(html, query) {
   
   console.log(`✅ 総取得件数: ${results.length}件（フィルタ前）`);
   
-  // デバッグ情報の出力
   if (results.length === 0) {
     console.log('❌ データ抽出に失敗しました。詳細分析:');
     
-    // HTMLサンプルを出力
     const htmlSample = html.substring(0, 2000);
     console.log('📄 HTMLサンプル（最初の2000文字）:');
     console.log(htmlSample);
     
-    // 特定のキーワードを含む行を抽出
     const lines = html.split('\n');
     const relevantLines = lines.filter(line => 
       line.includes('メルカリ') || 
@@ -754,16 +695,13 @@ async function parseAucfanResults(html, query) {
       console.log(`${index + 1}: ${line.trim().substring(0, 150)}...`);
     });
   } else {
-    // 成功時のサマリー
     const mercariCount = results.filter(r => r.platform === 'メルカリ').length;
     const yahooCount = results.filter(r => r.platform === 'ヤフオク').length;
     console.log(`📊 抽出サマリー: メルカリ${mercariCount}件, ヤフオク${yahooCount}件`);
   }
   
-  // 直近1年データに限定し、異常値を除外（20件制限を削除）
   const filteredResults = filterValidPrices(results);
   
-  // 統計情報を計算
   let avgPrice = 0;
   let maxPrice = 0;
   let minPrice = 0;
@@ -792,16 +730,14 @@ async function parseAucfanResults(html, query) {
 }
 
 /**
- * オークファンから相場情報を取得（日本語対応強化版）
+ * オークファンから相場情報を取得
  */
 async function scrapeAucfan(query) {
   try {
     console.log(`🔍 検索開始: ${query}`);
     
-    // 日本語文字の場合は複数のエンコーディング方式を試す
     let encodedQuery;
     if (/[ひらがなカタカナ漢字]/.test(query)) {
-      // 日本語の場合、複数の方式でエンコード
       console.log(`🔤 日本語クエリ検出: ${query}`);
       encodedQuery = encodeURIComponent(query);
       console.log(`📝 エンコード結果: ${encodedQuery}`);
@@ -809,15 +745,13 @@ async function scrapeAucfan(query) {
       encodedQuery = encodeURIComponent(query);
     }
     
-    // シンプルなオークファンURL（リダイレクト回避）
     const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/`;
     console.log(`📍 URL: ${aucfanURL}`);
     
-    // HTTPリクエストを送信（リダイレクト制限を緩和）
     const response = await httpClient.get(aucfanURL, {
       responseType: 'arraybuffer',
-      maxRedirects: 3, // リダイレクト回数を制限
-      timeout: 15000, // タイムアウトを短縮
+      maxRedirects: 3,
+      timeout: 15000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -835,13 +769,11 @@ async function scrapeAucfan(query) {
       throw new Error(`HTTPエラー: ${response.status}`);
     }
     
-    // レスポンスを適切にデコード
     const buffer = Buffer.from(response.data);
     const html = decodeResponse(buffer);
     
     console.log(`📄 HTML長: ${html.length}文字`);
     
-    // HTMLに検索結果があるかチェック
     if (html.includes('検索結果が見つかりません') || html.includes('該当する商品が見つかりません')) {
       console.log('❌ 検索結果なし');
       return {
@@ -861,15 +793,13 @@ async function scrapeAucfan(query) {
   } catch (error) {
     console.error('❌ スクレイピングエラー:', error.message);
     
-    // リダイレクトエラーの場合は別のアプローチ
     if (error.message.includes('redirect')) {
       console.log('🔄 リダイレクト回避で再試行');
       try {
-        // 最もシンプルなURL
         const simpleURL = `https://aucfan.com/search1/q-${encodeURIComponent(query)}/`;
         const response = await httpClient.get(simpleURL, {
           responseType: 'arraybuffer',
-          maxRedirects: 0, // リダイレクトを無効化
+          maxRedirects: 0,
           timeout: 10000,
           validateStatus: function (status) {
             return status >= 200 && status < 400;
@@ -885,7 +815,6 @@ async function scrapeAucfan(query) {
       }
     }
     
-    // より詳細なエラー情報
     if (error.response) {
       console.error('- レスポンスステータス:', error.response.status);
     }
@@ -895,7 +824,7 @@ async function scrapeAucfan(query) {
 }
 
 /**
- * 仕入れ判定を行う（手数料・消費税込み版）
+ * 仕入れ判定を行う
  */
 function evaluatePurchase(auctionPrice, avgPrice, count) {
   if (avgPrice === 0 || count === 0) {
@@ -903,7 +832,7 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
       emoji: "❌",
       decision: "判定不可",
       reason: "相場データなし",
-      totalCost: auctionPrice // 最低でもオークション価格
+      totalCost: auctionPrice
     };
   }
   
@@ -912,12 +841,11 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
       emoji: "⚠️",
       decision: "判定困難", 
       reason: `データ不足（${count}件のみ）`,
-      totalCost: Math.round(auctionPrice * 1.155) // 手数料+消費税込み
+      totalCost: Math.round(auctionPrice * 1.155)
     };
   }
   
-  // 総原価計算：オークション価格 × 1.05（手数料5%） × 1.10（消費税10%）
-  const totalCost = Math.round(auctionPrice * 1.155); // 1.05 * 1.10 = 1.155
+  const totalCost = Math.round(auctionPrice * 1.155);
   const profit = avgPrice - totalCost;
   const profitRate = Math.round((profit / totalCost) * 100);
   
@@ -953,18 +881,16 @@ function evaluatePurchase(auctionPrice, avgPrice, count) {
 }
 
 /**
- * 商品名から類似商品も検索（オプション機能）
+ * 商品名から類似商品も検索
  */
 async function searchSimilarProducts(originalQuery) {
   console.log(`🔄 類似商品検索: ${originalQuery}`);
   
   const similarResults = [];
-  
-  // 商品名から重要なキーワードを抽出
   const keywords = extractKeywords(originalQuery);
   
   for (const keyword of keywords) {
-    if (keyword === originalQuery) continue; // 元の検索を除外
+    if (keyword === originalQuery) continue;
     
     try {
       console.log(`🔍 類似検索: ${keyword}`);
@@ -978,7 +904,6 @@ async function searchSimilarProducts(originalQuery) {
         });
       }
       
-      // APIの負荷を避けるため1秒待機
       await new Promise(resolve => setTimeout(resolve, 1000));
       
     } catch (error) {
@@ -994,40 +919,32 @@ async function searchSimilarProducts(originalQuery) {
  */
 function extractKeywords(productName) {
   const keywords = [];
-  
-  // 基本的なキーワード抽出ロジック
   const words = productName.split(/[\s\-_\+\/]+/);
   
-  // ブランド名パターン
   const brands = ['LOUIS VUITTON', 'ルイヴィトン', 'CHANEL', 'シャネル', 'HERMES', 'エルメス', 'GUCCI', 'グッチ', 'PRADA', 'プラダ'];
   const brandMatch = brands.find(brand => productName.toUpperCase().includes(brand.toUpperCase()));
   
-  // 商品カテゴリパターン
   const categories = ['バッグ', 'bag', '財布', 'wallet', '時計', 'watch', 'iPhone', 'iPad'];
   const categoryMatch = categories.find(category => productName.toLowerCase().includes(category.toLowerCase()));
   
-  // ブランド + カテゴリの組み合わせ
   if (brandMatch && categoryMatch) {
     keywords.push(`${brandMatch} ${categoryMatch}`);
   }
   
-  // 型番らしきパターン（英数字の組み合わせ）
   const modelPattern = /[A-Z0-9]{3,}/g;
   const models = productName.match(modelPattern);
   if (models) {
     keywords.push(...models);
   }
   
-  // 重要な単語（3文字以上）
   const importantWords = words.filter(word => 
     word.length >= 3 && 
     !['the', 'and', 'for', 'with'].includes(word.toLowerCase())
   );
   
-  keywords.push(...importantWords.slice(0, 2)); // 最大2つまで
+  keywords.push(...importantWords.slice(0, 2));
   
-  // 重複除去
-  return [...new Set(keywords)].slice(0, 3); // 最大3つのキーワード
+  return [...new Set(keywords)].slice(0, 3);
 }
 
 /**
@@ -1035,13 +952,10 @@ function extractKeywords(productName) {
  */
 async function processQuery(modelNumber, auctionPrice) {
   try {
-    // 1秒待機
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // オークファンから相場を取得
     const result = await scrapeAucfan(modelNumber);
     
-    // 類似商品検索（データが少ない場合のみ）
     let similarProducts = [];
     if (result.count < 5) {
       console.log('📊 データ件数が少ないため類似商品を検索');
@@ -1052,14 +966,12 @@ async function processQuery(modelNumber, auctionPrice) {
       }
     }
     
-    // 仕入れ判定を追加（手数料・消費税込み）
     const judgment = evaluatePurchase(auctionPrice, result.avgPrice, result.count);
     
-    // 原価計算詳細（修正版）
-    const handlingFee = Math.round(auctionPrice * 0.05); // 手数料5%
+    const handlingFee = Math.round(auctionPrice * 0.05);
     const subtotal = auctionPrice + handlingFee;
-    const consumptionTax = Math.round(subtotal * 0.10); // 消費税10%
-    const totalCost = subtotal + consumptionTax; // 正しい総原価計算
+    const consumptionTax = Math.round(subtotal * 0.10);
+    const totalCost = subtotal + consumptionTax;
     const profit = result.avgPrice - totalCost;
     const profitRate = result.avgPrice > 0 ? Math.round(((result.avgPrice - totalCost) / totalCost) * 100) : 0;
     
@@ -1071,7 +983,7 @@ async function processQuery(modelNumber, auctionPrice) {
       totalCost,
       judgment: {
         ...judgment,
-        totalCost // judgmentの中のtotalCostも更新
+        totalCost
       },
       profit,
       profitRate,
@@ -1092,7 +1004,6 @@ if (hasLineConfig && line && client) {
   }));
 }
 
-// その他のルートにはJSONパーサーを適用
 app.use((req, res, next) => {
   if (req.path !== '/webhook') {
     express.json()(req, res, next);
@@ -1127,16 +1038,12 @@ app.post('/api/search', async (req, res) => {
 
 // LINE Bot機能
 if (hasLineConfig && line && client) {
-  /**
-   * メッセージから型番と価格を抽出
-   */
   function parseMessage(message) {
     const lines = message.trim().split('\n').map(line => line.trim());
     
     let modelNumber = '';
     let price = 0;
     
-    // パターン1: 「型番：」「価格：」形式
     for (const line of lines) {
       const priceMatch = line.match(/(価格|現在価格|落札価格|入札価格|オークション価格)[:：]\s*([0-9,]+)/i);
       if (priceMatch) {
@@ -1153,7 +1060,6 @@ if (hasLineConfig && line && client) {
       }
     }
     
-    // パターン2: シンプル形式
     if (!modelNumber && lines.length >= 1) {
       modelNumber = lines[0];
     }
@@ -1180,9 +1086,6 @@ if (hasLineConfig && line && client) {
     return { modelNumber, price };
   }
 
-  /**
-   * 結果メッセージをフォーマット（手数料・消費税込み版）
-   */
   function formatResultMessage(result) {
     if (result.count === 0) {
       return `❌ 「${result.query}」の相場が見つかりません\n\n💡 型番を英数字で入力してみてください`;
@@ -1190,15 +1093,12 @@ if (hasLineConfig && line && client) {
     
     const { judgment } = result;
     
-    // メインメッセージ（大きく表示）
     let message = `${judgment.emoji} ${judgment.decision}\n`;
     message += `${judgment.reason}\n\n`;
     
-    // 基本情報
     message += `📊 【${result.query}】\n`;
     message += `💰 平均相場: ${result.avgPrice.toLocaleString()}円\n\n`;
     
-    // 原価計算の詳細
     message += `💵 オークション価格: ${result.auctionPrice.toLocaleString()}円\n`;
     message += `📝 手数料(5%): ${result.handlingFee.toLocaleString()}円\n`;
     message += `📝 消費税(10%): ${result.consumptionTax.toLocaleString()}円\n`;
@@ -1212,7 +1112,6 @@ if (hasLineConfig && line && client) {
     
     message += `📈 検索結果: ${result.count}件\n\n`;
     
-    // プラットフォーム内訳
     const mercariCount = result.results.filter(r => r.platform === 'メルカリ').length;
     const yahooCount = result.results.filter(r => r.platform === 'ヤフオク').length;
     
@@ -1224,7 +1123,6 @@ if (hasLineConfig && line && client) {
       message += `(直近1年・メルカリShopsは除外)\n\n`;
     }
     
-    // 最近の取引例（最大3件に増加）
     if (result.results.length > 0) {
       message += '📋 最近の取引:\n';
       const maxDisplay = Math.min(3, result.results.length);
@@ -1243,9 +1141,6 @@ if (hasLineConfig && line && client) {
     return message;
   }
 
-  /**
-   * テキストメッセージを処理
-   */
   async function handleTextMessage(event) {
     const messageText = event.message.text;
     const userId = event.source.userId;
@@ -1301,9 +1196,6 @@ if (hasLineConfig && line && client) {
     }
   }
 
-  /**
-   * LINEイベントを処理
-   */
   async function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'text') {
       return Promise.resolve(null);
@@ -1312,7 +1204,6 @@ if (hasLineConfig && line && client) {
     return handleTextMessage(event);
   }
 
-  // LINE Webhook
   app.post('/webhook', (req, res) => {
     Promise
       .all(req.body.events.map(handleEvent))
@@ -1323,7 +1214,6 @@ if (hasLineConfig && line && client) {
       });
   });
 } else {
-  // LINE機能が無効の場合のダミーエンドポイント
   app.post('/webhook', (req, res) => {
     res.json({ 
       error: 'LINE Bot機能が有効ではありません',
