@@ -57,7 +57,7 @@ function extractPrice(priceText) {
 }
 
 /**
- * 文字エンコーディングを適切に処理
+ * 文字エンコーディングを適切に処理（日本語強化版）
  */
 function decodeResponse(buffer) {
   try {
@@ -73,7 +73,19 @@ function decodeResponse(buffer) {
   // iconv-liteが利用可能な場合はShift_JISを試す
   try {
     const iconv = require('iconv-lite');
-    return iconv.decode(buffer, 'shift_jis');
+    // まずShift_JISを試す
+    const sjisText = iconv.decode(buffer, 'shift_jis');
+    if (!sjisText.includes('�')) {
+      return sjisText;
+    }
+    
+    // 次にEUC-JPを試す
+    const eucText = iconv.decode(buffer, 'euc-jp');
+    if (!eucText.includes('�')) {
+      return eucText;
+    }
+    
+    return sjisText; // Shift_JISを優先
   } catch (e) {
     // iconv-liteが無い場合はUTF-8で強制変換
     return buffer.toString('utf8');
@@ -156,32 +168,47 @@ function filterRecentAndValidPrices(results) {
 }
 
 /**
- * オークファンから相場情報を取得（改良版、ログインなし）
+ * オークファンから相場情報を取得（日本語対応強化版）
  */
 async function scrapeAucfan(query) {
   try {
     console.log(`🔍 検索開始: ${query}`);
     
-    // 日本語文字の場合は追加でエンコーディング処理
+    // 日本語文字の場合は複数のエンコーディング方式を試す
     let encodedQuery;
     if (/[ひらがなカタカナ漢字]/.test(query)) {
-      encodedQuery = encodeURIComponent(query)
-        .replace(/'/g, '%27')
-        .replace(/\(/g, '%28')
-        .replace(/\)/g, '%29');
-      console.log(`🔤 日本語クエリ検出、特別エンコーディング適用`);
+      // 日本語の場合、複数の方式でエンコード
+      console.log(`🔤 日本語クエリ検出: ${query}`);
+      
+      // 方式1: 標準的なURIエンコード
+      const standardEncoded = encodeURIComponent(query);
+      
+      // 方式2: 手動でUTF-8バイト列に変換
+      const utf8Bytes = Buffer.from(query, 'utf8');
+      const hexEncoded = Array.from(utf8Bytes)
+        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
+        .join('');
+      
+      // まず標準方式を試す
+      encodedQuery = standardEncoded;
+      console.log(`📝 エンコード結果: ${encodedQuery}`);
     } else {
       encodedQuery = encodeURIComponent(query);
     }
     
-    // 無料版でも使えるURL（過去30日）
-    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/`;
+    // メルカリ・ヤフオク限定の検索URL（オークファンの検索パラメータ）
+    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/?o=t1&s1=end_time&t=-1`;
     console.log(`📍 URL: ${aucfanURL}`);
     
-    // HTTPリクエストを送信
+    // HTTPリクエストを送信（日本語対応のヘッダー追加）
     const response = await httpClient.get(aucfanURL, {
       responseType: 'arraybuffer',
       maxRedirects: 5,
+      headers: {
+        ...httpClient.defaults.headers,
+        'Accept-Charset': 'utf-8, shift_jis, euc-jp',
+        'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
+      },
       validateStatus: function (status) {
         return status >= 200 && status < 400;
       }
@@ -197,204 +224,274 @@ async function scrapeAucfan(query) {
     
     console.log(`📄 HTML長: ${html.length}文字`);
     
-    // Cheerioでパース
-    const $ = cheerio.load(html);
-    
-    const results = [];
-    
-    // 2024年版オークファンの更新されたセレクタパターン
-    const selectors = [
-      // 最新のオークファンのセレクタ（推測）
-      '.js-product',
-      '.js-item',
-      '.product-item',
-      '.item-data',
-      '.result-item',
-      '.search-result-item',
-      '.l-product-list-item',
-      '.auction-item',
-      '.product-box',
-      '.item-box',
-      // 2024年版の新しいセレクタ
-      '.product-list-item',
-      '.result-product-item',
-      '.search-item',
-      '.auction-result',
-      // テーブル形式
-      'tr.product-row',
-      'tr[class*="item"]',
-      'tbody tr',
-      // フォールバック用の汎用セレクタ
-      'div[class*="item"]',
-      'li[class*="product"]',
-      'div[class*="product"]'
-    ];
-    
-    // より詳細なセレクタで試行
-    for (const selector of selectors) {
-      console.log(`🔍 セレクタ試行: ${selector}`);
+    // 日本語が正しく表示されているかチェック
+    if (/[ひらがなカタカナ漢字]/.test(query) && !html.includes(query)) {
+      console.log('⚠️ 検索クエリがHTMLに見つかりません。別のエンコーディングを試行...');
       
-      $(selector).each((index, element) => {
-        if (results.length >= 100) return false; // 最大100件まで収集
-        
-        const $item = $(element);
-        
-        // タイトル取得（複数パターン）
-        let title = '';
-        const titleSelectors = [
-          'h3', '.title', '.product-title', '.item-title', '.auction-title',
-          'a[title]', '.product-name', '.item-name', '.auction-name',
-          '.result-title', '[class*="title"]'
-        ];
-        
-        for (const titleSelector of titleSelectors) {
-          title = $item.find(titleSelector).first().text().trim();
-          if (title && title.length > 3) break;
-        }
-        
-        if (!title) {
-          title = $item.find('a').first().text().trim();
-        }
-        
-        // 価格取得（複数パターン）
-        let priceText = '';
-        const priceSelectors = [
-          '.price', '.product-price', '.current-price', '.item-price',
-          '.auction-price', '.end-price', '.final-price', '.sold-price',
-          '[class*="price"]', 'td:contains("円")', 'span:contains("円")',
-          'div:contains("円")', '.yen', '.money'
-        ];
-        
-        for (const priceSelector of priceSelectors) {
-          priceText = $item.find(priceSelector).text();
-          if (priceText && priceText.includes('円')) break;
-        }
-        
-        const price = extractPrice(priceText);
-        
-        // 日付取得
-        let date = '';
-        const dateSelectors = [
-          '.date', '.end-date', '.item-date', '.auction-date',
-          '.sell-date', '.sold-date', '[class*="date"]', '.time'
-        ];
-        
-        for (const dateSelector of dateSelectors) {
-          date = $item.find(dateSelector).first().text().trim();
-          if (date && (date.includes('/') || date.includes('-') || date.includes('月'))) break;
-        }
-        
-        // URL取得
-        let linkURL = $item.find('a').first().attr('href');
-        if (linkURL && !linkURL.startsWith('http')) {
-          linkURL = 'https://aucfan.com' + linkURL;
-        }
-        
-        // 有効なデータのみ追加
-        if (title && title.length > 2 && price > 0) {
-          results.push({
-            title: title.substring(0, 100),
-            price,
-            date,
-            url: linkURL || '',
-            imageURL: ''
-          });
+      // 方式2で再試行
+      const utf8Bytes = Buffer.from(query, 'utf8');
+      const hexEncoded = Array.from(utf8Bytes)
+        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
+        .join('');
+      
+      const retryURL = `https://aucfan.com/search1/q-${hexEncoded}/?o=t1&s1=end_time&t=-1`;
+      console.log(`🔄 再試行URL: ${retryURL}`);
+      
+      const retryResponse = await httpClient.get(retryURL, {
+        responseType: 'arraybuffer',
+        headers: {
+          ...httpClient.defaults.headers,
+          'Accept-Charset': 'utf-8, shift_jis, euc-jp',
+          'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
         }
       });
       
-      if (results.length > 0) {
-        console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
-        break;
+      if (retryResponse.status === 200) {
+        const retryBuffer = Buffer.from(retryResponse.data);
+        const retryHtml = decodeResponse(retryBuffer);
+        return await parseAucfanResults(retryHtml, query);
       }
     }
     
-    // より汎用的なHTMLパース（フォールバック）
-    if (results.length === 0) {
-      console.log('🔄 フォールバック検索を実行');
+/**
+ * オークファンの検索結果HTMLを解析（メルカリ・ヤフオク限定）
+ */
+async function parseAucfanResults(html, query) {
+  console.log(`📄 HTML長: ${html.length}文字`);
+  
+  // Cheerioでパース
+  const $ = cheerio.load(html);
+  
+  const results = [];
+  
+  // メルカリ・ヤフオクの結果のみを取得するセレクタ
+  const selectors = [
+    // 最新のオークファンのセレクタ（推測）
+    '.js-product',
+    '.js-item',
+    '.product-item',
+    '.item-data',
+    '.result-item',
+    '.search-result-item',
+    '.l-product-list-item',
+    '.auction-item',
+    '.product-box',
+    '.item-box',
+    // 2024年版の新しいセレクタ
+    '.product-list-item',
+    '.result-product-item',
+    '.search-item',
+    '.auction-result',
+    // テーブル形式
+    'tr.product-row',
+    'tr[class*="item"]',
+    'tbody tr',
+    // フォールバック用の汎用セレクタ
+    'div[class*="item"]',
+    'li[class*="product"]',
+    'div[class*="product"]'
+  ];
+  
+  // より詳細なセレクタで試行
+  for (const selector of selectors) {
+    console.log(`🔍 セレクタ試行: ${selector}`);
+    
+    $(selector).each((index, element) => {
+      if (results.length >= 100) return false; // 最大100件まで収集
       
-      $('*').each((index, element) => {
-        if (results.length >= 50) return false;
-        
-        const $el = $(element);
-        const text = $el.text();
-        
-        // 価格らしきパターンを検索（広告価格を除外）
-        if (text.match(/[\d,]+円/) && text.length < 500) {
-          const priceMatch = text.match(/([\d,]+)円/);
-          if (priceMatch) {
-            const price = extractPrice(priceMatch[1]);
-            if (price > 500 && price < 10000000) { // 500円〜1000万円の範囲
-              const nearbyLink = $el.closest('*').find('a').first();
-              const title = nearbyLink.text().trim() || text.substring(0, 50);
-              
-              // 広告関連のキーワードをチェック
-              const adKeywords = ['初月無料', '月額', 'プレミアム', '2200円', '998円', 'オークファン'];
-              const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
-              
-              if (title.length > 3 && !hasAdKeyword) {
-                results.push({
-                  title,
-                  price,
-                  date: '',
-                  url: '',
-                  imageURL: ''
-                });
-              }
+      const $item = $(element);
+      
+      // プラットフォーム判定（メルカリ・ヤフオクのみ）
+      const itemHtml = $item.html();
+      const isFromMercari = itemHtml && (
+        itemHtml.includes('mercari') || 
+        itemHtml.includes('メルカリ') ||
+        $item.find('*:contains("メルカリ")').length > 0
+      );
+      const isFromYahooAuction = itemHtml && (
+        itemHtml.includes('yahoo') || 
+        itemHtml.includes('ヤフオク') ||
+        itemHtml.includes('Yahoo') ||
+        $item.find('*:contains("ヤフオク")').length > 0 ||
+        $item.find('*:contains("Yahoo")').length > 0
+      );
+      
+      // Yahoo!ショッピングを除外
+      const isFromYahooShopping = itemHtml && (
+        itemHtml.includes('shopping.yahoo') ||
+        itemHtml.includes('ショッピング') ||
+        $item.find('*:contains("ショッピング")').length > 0
+      );
+      
+      // メルカリまたはヤフオクでない場合、またはYahoo!ショッピングの場合はスキップ
+      if ((!isFromMercari && !isFromYahooAuction) || isFromYahooShopping) {
+        return true; // continue
+      }
+      
+      // タイトル取得（複数パターン）
+      let title = '';
+      const titleSelectors = [
+        'h3', '.title', '.product-title', '.item-title', '.auction-title',
+        'a[title]', '.product-name', '.item-name', '.auction-name',
+        '.result-title', '[class*="title"]'
+      ];
+      
+      for (const titleSelector of titleSelectors) {
+        title = $item.find(titleSelector).first().text().trim();
+        if (title && title.length > 3) break;
+      }
+      
+      if (!title) {
+        title = $item.find('a').first().text().trim();
+      }
+      
+      // 価格取得（複数パターン）
+      let priceText = '';
+      const priceSelectors = [
+        '.price', '.product-price', '.current-price', '.item-price',
+        '.auction-price', '.end-price', '.final-price', '.sold-price',
+        '[class*="price"]', 'td:contains("円")', 'span:contains("円")',
+        'div:contains("円")', '.yen', '.money'
+      ];
+      
+      for (const priceSelector of priceSelectors) {
+        priceText = $item.find(priceSelector).text();
+        if (priceText && priceText.includes('円')) break;
+      }
+      
+      const price = extractPrice(priceText);
+      
+      // 日付取得
+      let date = '';
+      const dateSelectors = [
+        '.date', '.end-date', '.item-date', '.auction-date',
+        '.sell-date', '.sold-date', '[class*="date"]', '.time'
+      ];
+      
+      for (const dateSelector of dateSelectors) {
+        date = $item.find(dateSelector).first().text().trim();
+        if (date && (date.includes('/') || date.includes('-') || date.includes('月'))) break;
+      }
+      
+      // URL取得
+      let linkURL = $item.find('a').first().attr('href');
+      if (linkURL && !linkURL.startsWith('http')) {
+        linkURL = 'https://aucfan.com' + linkURL;
+      }
+      
+      // プラットフォーム情報を追加
+      const platform = isFromMercari ? 'メルカリ' : 'ヤフオク';
+      
+      // 有効なデータのみ追加
+      if (title && title.length > 2 && price > 0) {
+        results.push({
+          title: title.substring(0, 100),
+          price,
+          date,
+          url: linkURL || '',
+          imageURL: '',
+          platform
+        });
+      }
+    });
+    
+    if (results.length > 0) {
+      console.log(`✅ セレクタ「${selector}」で${results.length}件取得`);
+      break;
+    }
+  }
+  
+  // より汎用的なHTMLパース（フォールバック）
+  if (results.length === 0) {
+    console.log('🔄 フォールバック検索を実行');
+    
+    $('*').each((index, element) => {
+      if (results.length >= 50) return false;
+      
+      const $el = $(element);
+      const text = $el.text();
+      
+      // メルカリ・ヤフオクの判定
+      const isFromTarget = text.includes('メルカリ') || text.includes('ヤフオク') || text.includes('Yahoo');
+      const isFromShopping = text.includes('ショッピング');
+      
+      if (!isFromTarget || isFromShopping) {
+        return true; // continue
+      }
+      
+      // 価格らしきパターンを検索（広告価格を除外）
+      if (text.match(/[\d,]+円/) && text.length < 500) {
+        const priceMatch = text.match(/([\d,]+)円/);
+        if (priceMatch) {
+          const price = extractPrice(priceMatch[1]);
+          if (price > 500 && price < 10000000) { // 500円〜1000万円の範囲
+            const nearbyLink = $el.closest('*').find('a').first();
+            const title = nearbyLink.text().trim() || text.substring(0, 50);
+            
+            // 広告関連のキーワードをチェック
+            const adKeywords = ['初月無料', '月額', 'プレミアム', '2200円', '998円', 'オークファン'];
+            const hasAdKeyword = adKeywords.some(keyword => title.includes(keyword));
+            
+            if (title.length > 3 && !hasAdKeyword) {
+              const platform = text.includes('メルカリ') ? 'メルカリ' : 'ヤフオク';
+              results.push({
+                title,
+                price,
+                date: '',
+                url: '',
+                imageURL: '',
+                platform
+              });
             }
           }
         }
-      });
-    }
+      }
+    });
+  }
+  
+  console.log(`✅ 取得件数: ${results.length}件（フィルタ前）`);
+  
+  if (results.length === 0) {
+    // HTMLの構造をデバッグ情報として出力
+    console.log('🔍 HTMLデバッグ情報:');
+    console.log('- タイトル:', $('title').text());
+    console.log('- h1要素:', $('h1').text());
+    console.log('- メルカリを含む要素数:', $('*:contains("メルカリ")').length);
+    console.log('- ヤフオクを含む要素数:', $('*:contains("ヤフオク")').length);
+    console.log('- Yahoo!を含む要素数:', $('*:contains("Yahoo")').length);
+    console.log('- 円を含む要素数:', $('*:contains("円")').length);
+  }
+  
+  // 最新データに限定し、異常値を除外
+  const filteredResults = filterRecentAndValidPrices(results);
+  
+  // 統計情報を計算
+  let avgPrice = 0;
+  let maxPrice = 0;
+  let minPrice = 0;
+  
+  if (filteredResults.length > 0) {
+    const prices = filteredResults.map(r => r.price);
+    const total = prices.reduce((sum, price) => sum + price, 0);
+    avgPrice = Math.round(total / prices.length);
+    maxPrice = Math.max(...prices);
+    minPrice = Math.min(...prices);
     
-    console.log(`✅ 取得件数: ${results.length}件（フィルタ前）`);
-    
-    if (results.length === 0) {
-      // HTMLの構造をデバッグ情報として出力
-      console.log('🔍 HTMLデバッグ情報:');
-      console.log('- タイトル:', $('title').text());
-      console.log('- h1要素:', $('h1').text());
-      console.log('- price関連クラス数:', $('[class*="price"]').length);
-      console.log('- 円を含む要素数:', $('*:contains("円")').length);
-      
-      // よくある広告テキストをチェック
-      const adTexts = ['初月無料', 'プレミアム', '2200円'];
-      adTexts.forEach(adText => {
-        const count = $(`*:contains("${adText}")`).length;
-        console.log(`- "${adText}"を含む要素数:`, count);
-      });
-    }
-    
-    // 最新データに限定し、異常値を除外
-    const filteredResults = filterRecentAndValidPrices(results);
-    
-    // 統計情報を計算
-    let avgPrice = 0;
-    let maxPrice = 0;
-    let minPrice = 0;
-    
-    if (filteredResults.length > 0) {
-      const prices = filteredResults.map(r => r.price);
-      const total = prices.reduce((sum, price) => sum + price, 0);
-      avgPrice = Math.round(total / prices.length);
-      maxPrice = Math.max(...prices);
-      minPrice = Math.min(...prices);
-      
-      console.log(`📊 最終統計: 平均${avgPrice}円, 最高${maxPrice}円, 最低${minPrice}円`);
-    }
-    
-    return {
-      query,
-      results: filteredResults,
-      count: filteredResults.length,
-      avgPrice,
-      maxPrice,
-      minPrice,
-      originalCount: results.length,
-      isLoggedIn: false
-    };
-    
-  } catch (error) {
-    console.error('❌ スクレイピングエラー:', error.message);
+    console.log(`📊 最終統計: 平均${avgPrice}円, 最高${maxPrice}円, 最低${minPrice}円`);
+    console.log(`📊 プラットフォーム内訳: メルカリ${filteredResults.filter(r => r.platform === 'メルカリ').length}件, ヤフオク${filteredResults.filter(r => r.platform === 'ヤフオク').length}件`);
+  }
+  
+  return {
+    query,
+    results: filteredResults,
+    count: filteredResults.length,
+    avgPrice,
+    maxPrice,
+    minPrice,
+    originalCount: results.length,
+    isLoggedIn: false
+  };
+}
     
     // より詳細なエラー情報
     if (error.response) {
@@ -407,39 +504,67 @@ async function scrapeAucfan(query) {
 }
 
 /**
- * 仕入れ判定を行う（改良版）
+ * 仕入れ判定を行う（手数料・消費税込み版）
  */
-function evaluatePurchase(currentPrice, avgPrice, count) {
+function evaluatePurchase(auctionPrice, avgPrice, count) {
   if (avgPrice === 0 || count === 0) {
-    return "❌ 相場データが不足しています（検索結果が見つかりません）";
+    return {
+      emoji: "❌",
+      decision: "判定不可",
+      reason: "相場データなし",
+      totalCost: 0
+    };
   }
   
   if (count < 3) {
-    return "⚠️ 相場データが少ないため判定困難（3件未満）";
+    return {
+      emoji: "⚠️",
+      decision: "判定困難", 
+      reason: "データ不足（3件未満）",
+      totalCost: 0
+    };
   }
   
-  const priceRatio = currentPrice / avgPrice;
-  const profitMargin = ((avgPrice - currentPrice) / currentPrice) * 100;
+  // 総原価計算：オークション価格 × 1.05（手数料5%） × 1.10（消費税10%）
+  const totalCost = Math.round(auctionPrice * 1.05 * 1.10);
+  const profit = avgPrice - totalCost;
+  const profitRate = Math.round((profit / totalCost) * 100);
   
-  if (priceRatio <= 0.5) {
-    return `🟢 仕入れ強く推奨: 相場より大幅に安い（50%以上安い、利益率+${Math.round(profitMargin)}%）`;
-  } else if (priceRatio <= 0.7) {
-    return `🟢 仕入れ推奨: 相場より安い（30%以上安い、利益率+${Math.round(profitMargin)}%）`;
-  } else if (priceRatio <= 0.85) {
-    return `🟡 仕入れ検討: 相場よりやや安い（15%以上安い、利益率+${Math.round(profitMargin)}%）`;
-  } else if (priceRatio <= 1.1) {
-    return `🟠 慎重検討: 相場付近（±10%以内、利益率${Math.round(profitMargin)}%）`;
-  } else if (priceRatio <= 1.3) {
-    return `🔴 仕入れ非推奨: 相場より高い（30%以上高い）`;
+  if (profitRate >= 50) {
+    return {
+      emoji: "🟢",
+      decision: "仕入れ推奨",
+      reason: `利益率+${profitRate}%`,
+      totalCost
+    };
+  } else if (profitRate >= 20) {
+    return {
+      emoji: "🟡",
+      decision: "仕入れ検討",
+      reason: `利益率+${profitRate}%`,
+      totalCost
+    };
+  } else if (profitRate >= 0) {
+    return {
+      emoji: "🟠",
+      decision: "慎重検討",
+      reason: `利益率+${profitRate}%`,
+      totalCost
+    };
   } else {
-    return `⛔ 仕入れ不可: 相場より大幅に高い（30%以上高い）`;
+    return {
+      emoji: "🔴",
+      decision: "仕入れNG",
+      reason: `損失${Math.abs(profitRate)}%`,
+      totalCost
+    };
   }
 }
 
 /**
  * メイン処理関数
  */
-async function processQuery(modelNumber, currentPrice) {
+async function processQuery(modelNumber, auctionPrice) {
   try {
     // 1秒待機
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -447,20 +572,26 @@ async function processQuery(modelNumber, currentPrice) {
     // オークファンから相場を取得
     const result = await scrapeAucfan(modelNumber);
     
-    // 仕入れ判定を追加
-    const recommendation = evaluatePurchase(currentPrice, result.avgPrice, result.count);
+    // 仕入れ判定を追加（手数料・消費税込み）
+    const judgment = evaluatePurchase(auctionPrice, result.avgPrice, result.count);
     
-    // 利益率計算
-    let profitRate = 0;
-    if (result.avgPrice > 0) {
-      profitRate = ((result.avgPrice - currentPrice) / currentPrice) * 100;
-    }
+    // 原価計算詳細
+    const handlingFee = Math.round(auctionPrice * 0.05); // 手数料5%
+    const subtotal = auctionPrice + handlingFee;
+    const consumptionTax = Math.round(subtotal * 0.10); // 消費税10%
+    const totalCost = judgment.totalCost;
+    const profit = result.avgPrice - totalCost;
+    const profitRate = result.avgPrice > 0 ? Math.round(((result.avgPrice - totalCost) / totalCost) * 100) : 0;
     
     return {
       ...result,
-      currentPrice,
-      recommendation,
-      profitRate: Math.round(profitRate * 10) / 10
+      auctionPrice,
+      handlingFee,
+      consumptionTax,
+      totalCost,
+      judgment,
+      profit,
+      profitRate
     };
     
   } catch (error) {
@@ -490,16 +621,16 @@ app.use(express.urlencoded({ extended: true }));
 // API エンドポイント
 app.post('/api/search', async (req, res) => {
   try {
-    const { modelNumber, currentPrice } = req.body;
+    const { modelNumber, auctionPrice } = req.body;
     
-    if (!modelNumber || !currentPrice) {
+    if (!modelNumber || !auctionPrice) {
       return res.status(400).json({
-        error: '型番と現在価格を指定してください',
-        example: { modelNumber: 'iPhone 13 Pro', currentPrice: 80000 }
+        error: '型番とオークション価格を指定してください',
+        example: { modelNumber: 'iPhone 13 Pro', auctionPrice: 80000 }
       });
     }
     
-    const result = await processQuery(modelNumber, parseInt(currentPrice));
+    const result = await processQuery(modelNumber, parseInt(auctionPrice));
     res.json(result);
     
   } catch (error) {
@@ -523,7 +654,7 @@ if (hasLineConfig && line && client) {
     
     // パターン1: 「型番：」「価格：」形式
     for (const line of lines) {
-      const priceMatch = line.match(/(価格|現在価格|落札価格|入札価格)[:：]\s*([0-9,]+)/i);
+      const priceMatch = line.match(/(価格|現在価格|落札価格|入札価格|オークション価格)[:：]\s*([0-9,]+)/i);
       if (priceMatch) {
         const priceStr = priceMatch[2].replace(/,/g, '');
         const parsedPrice = parseInt(priceStr);
@@ -559,59 +690,69 @@ if (hasLineConfig && line && client) {
     }
     
     if (price === 0) {
-      return { error: '価格が見つかりません' };
+      return { error: 'オークション価格が見つかりません' };
     }
     
     return { modelNumber, price };
   }
 
   /**
-   * 結果メッセージをフォーマット
+   * 結果メッセージをフォーマット（手数料・消費税込み版）
    */
   function formatResultMessage(result) {
     if (result.count === 0) {
-      return `「${result.query}」の相場情報が見つかりませんでした。\n\n💡 以下をお試しください:\n・型番を英数字で入力\n・商品名を短くする\n・別の呼び方で検索`;
+      return `❌ 「${result.query}」の相場が見つかりません\n\n💡 型番を英数字で入力してみてください`;
     }
     
-    let message = `📊 【${result.query}】相場分析結果\n\n`;
-    message += `🔍 検索結果: ${result.count}件`;
-    if (result.originalCount && result.originalCount > result.count) {
-      message += `\n📝 フィルタ前: ${result.originalCount}件（広告除去済み）`;
+    const { judgment } = result;
+    
+    // メインメッセージ（大きく表示）
+    let message = `${judgment.emoji} ${judgment.decision}\n`;
+    message += `${judgment.reason}\n\n`;
+    
+    // 基本情報
+    message += `📊 【${result.query}】\n`;
+    message += `💰 平均相場: ${result.avgPrice.toLocaleString()}円\n\n`;
+    
+    // 原価計算の詳細
+    message += `💵 オークション価格: ${result.auctionPrice.toLocaleString()}円\n`;
+    message += `📝 手数料(5%): ${result.handlingFee.toLocaleString()}円\n`;
+    message += `📝 消費税(10%): ${result.consumptionTax.toLocaleString()}円\n`;
+    message += `💼 総原価: ${result.totalCost.toLocaleString()}円\n\n`;
+    
+    if (result.profit > 0) {
+      message += `✅ 想定利益: +${result.profit.toLocaleString()}円\n`;
+    } else {
+      message += `❌ 想定損失: ${result.profit.toLocaleString()}円\n`;
     }
-    message += '\n\n';
     
-    message += `💰 平均相場: ${result.avgPrice.toLocaleString()}円\n`;
-    message += `📈 最高価格: ${result.maxPrice.toLocaleString()}円\n`;
-    message += `📉 最低価格: ${result.minPrice.toLocaleString()}円\n`;
-    message += `💵 現在価格: ${result.currentPrice.toLocaleString()}円\n\n`;
+    message += `📈 検索結果: ${result.count}件\n\n`;
     
-    message += `📋 判定結果:\n${result.recommendation}\n\n`;
+    // プラットフォーム内訳
+    const mercariCount = result.results.filter(r => r.platform === 'メルカリ').length;
+    const yahooCount = result.results.filter(r => r.platform === 'ヤフオク').length;
     
-    if (result.profitRate !== 0) {
-      const sign = result.profitRate > 0 ? '+' : '';
-      message += `💡 期待利益率: ${sign}${result.profitRate}%\n\n`;
+    if (mercariCount > 0 || yahooCount > 0) {
+      message += `📱 内訳: `;
+      if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
+      if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
+      message += '\n\n';
     }
     
+    // 最近の取引例（最大2件）
     if (result.results.length > 0) {
-      message += '📋 最近の取引例:\n';
-      const maxDisplay = Math.min(3, result.results.length);
+      message += '📋 最近の取引:\n';
+      const maxDisplay = Math.min(2, result.results.length);
       
       for (let i = 0; i < maxDisplay; i++) {
         const auction = result.results[i];
         let shortTitle = auction.title;
-        if (shortTitle.length > 25) {
-          shortTitle = shortTitle.substring(0, 25) + '...';
+        if (shortTitle.length > 20) {
+          shortTitle = shortTitle.substring(0, 20) + '...';
         }
-        message += `• ${shortTitle}\n  ${auction.price.toLocaleString()}円`;
-        if (auction.date) {
-          message += ` (${auction.date})`;
-        }
-        message += '\n';
+        message += `${auction.platform}: ${auction.price.toLocaleString()}円\n`;
       }
     }
-    
-    message += '\n✅ 広告データ自動除去済み';
-    message += '\n💡 使用方法:\n型番と価格を入力してください\n例:\niPhone 13 Pro\n80000';
     
     return message;
   }
@@ -626,13 +767,13 @@ if (hasLineConfig && line && client) {
     try {
       await client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '🔍 相場を検索中です...\n（広告データを自動除去しています）\nしばらくお待ちください。'
+        text: '🔍 相場検索中...\n(メルカリ・ヤフオクのみ対象)'
       });
       
       const parseResult = parseMessage(messageText);
       
       if (parseResult.error) {
-        const errorMsg = `❌ ${parseResult.error}\n\n💡 正しい形式で入力してください:\n\n例1:\niPhone 13 Pro\n80000\n\n例2:\n型番: iPhone 13 Pro\n価格: 80000`;
+        const errorMsg = `❌ ${parseResult.error}\n\n💡 正しい形式で入力してください:\n\n例1:\niPhone 13 Pro\n80000\n\n例2:\n型番: iPhone 13 Pro\nオークション価格: 80000`;
         await client.pushMessage(userId, {
           type: 'text',
           text: errorMsg
@@ -745,7 +886,7 @@ app.get('/', (req, res) => {
         method: 'POST',
         body: {
           modelNumber: 'iPhone 13 Pro',
-          currentPrice: 80000
+          auctionPrice: 80000
         }
       }
     }
