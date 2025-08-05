@@ -26,21 +26,19 @@ if (hasLineConfig) {
   console.log('⚠️ LINE環境変数が設定されていません。API専用モードで起動します。');
 }
 
-// HTTPクライアントの設定
+// HTTPクライアントの設定（リダイレクト対応）
 const httpClient = axios.create({
-  timeout: 30000,
+  timeout: 15000, // タイムアウトを短縮
+  maxRedirects: 3, // リダイレクト回数を制限
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
-    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'ja,en-US;q=0.5,en;q=0.3',
+    'Accept-Encoding': 'gzip, deflate',
     'DNT': '1',
     'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Cache-Control': 'max-age=0'
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
   }
 });
 
@@ -419,35 +417,28 @@ async function scrapeAucfan(query) {
     if (/[ひらがなカタカナ漢字]/.test(query)) {
       // 日本語の場合、複数の方式でエンコード
       console.log(`🔤 日本語クエリ検出: ${query}`);
-      
-      // 方式1: 標準的なURIエンコード
-      const standardEncoded = encodeURIComponent(query);
-      
-      // 方式2: 手動でUTF-8バイト列に変換
-      const utf8Bytes = Buffer.from(query, 'utf8');
-      const hexEncoded = Array.from(utf8Bytes)
-        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
-        .join('');
-      
-      // まず標準方式を試す
-      encodedQuery = standardEncoded;
+      encodedQuery = encodeURIComponent(query);
       console.log(`📝 エンコード結果: ${encodedQuery}`);
     } else {
       encodedQuery = encodeURIComponent(query);
     }
     
-    // メルカリ・ヤフオク限定の検索URL（オークファンの検索パラメータ）
-    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/?o=t1&s1=end_time&t=-1`;
+    // シンプルなオークファンURL（リダイレクト回避）
+    const aucfanURL = `https://aucfan.com/search1/q-${encodedQuery}/`;
     console.log(`📍 URL: ${aucfanURL}`);
     
-    // HTTPリクエストを送信（日本語対応のヘッダー追加）
+    // HTTPリクエストを送信（リダイレクト制限を緩和）
     const response = await httpClient.get(aucfanURL, {
       responseType: 'arraybuffer',
-      maxRedirects: 5,
+      maxRedirects: 3, // リダイレクト回数を制限
+      timeout: 15000, // タイムアウトを短縮
       headers: {
-        ...httpClient.defaults.headers,
-        'Accept-Charset': 'utf-8, shift_jis, euc-jp',
-        'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'ja,en-US;q=0.5,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
       },
       validateStatus: function (status) {
         return status >= 200 && status < 400;
@@ -464,33 +455,19 @@ async function scrapeAucfan(query) {
     
     console.log(`📄 HTML長: ${html.length}文字`);
     
-    // 日本語が正しく表示されているかチェック
-    if (/[ひらがなカタカナ漢字]/.test(query) && !html.includes(query)) {
-      console.log('⚠️ 検索クエリがHTMLに見つかりません。別のエンコーディングを試行...');
-      
-      // 方式2で再試行
-      const utf8Bytes = Buffer.from(query, 'utf8');
-      const hexEncoded = Array.from(utf8Bytes)
-        .map(b => '%' + b.toString(16).padStart(2, '0').toUpperCase())
-        .join('');
-      
-      const retryURL = `https://aucfan.com/search1/q-${hexEncoded}/?o=t1&s1=end_time&t=-1`;
-      console.log(`🔄 再試行URL: ${retryURL}`);
-      
-      const retryResponse = await httpClient.get(retryURL, {
-        responseType: 'arraybuffer',
-        headers: {
-          ...httpClient.defaults.headers,
-          'Accept-Charset': 'utf-8, shift_jis, euc-jp',
-          'Accept-Language': 'ja-JP,ja;q=0.9,en;q=0.8'
-        }
-      });
-      
-      if (retryResponse.status === 200) {
-        const retryBuffer = Buffer.from(retryResponse.data);
-        const retryHtml = decodeResponse(retryBuffer);
-        return await parseAucfanResults(retryHtml, query);
-      }
+    // HTMLに検索結果があるかチェック
+    if (html.includes('検索結果が見つかりません') || html.includes('該当する商品が見つかりません')) {
+      console.log('❌ 検索結果なし');
+      return {
+        query,
+        results: [],
+        count: 0,
+        avgPrice: 0,
+        maxPrice: 0,
+        minPrice: 0,
+        originalCount: 0,
+        isLoggedIn: false
+      };
     }
     
     return await parseAucfanResults(html, query);
@@ -498,10 +475,33 @@ async function scrapeAucfan(query) {
   } catch (error) {
     console.error('❌ スクレイピングエラー:', error.message);
     
+    // リダイレクトエラーの場合は別のアプローチ
+    if (error.message.includes('redirect')) {
+      console.log('🔄 リダイレクト回避で再試行');
+      try {
+        // 最もシンプルなURL
+        const simpleURL = `https://aucfan.com/search1/q-${encodeURIComponent(query)}/`;
+        const response = await httpClient.get(simpleURL, {
+          responseType: 'arraybuffer',
+          maxRedirects: 0, // リダイレクトを無効化
+          timeout: 10000,
+          validateStatus: function (status) {
+            return status >= 200 && status < 400;
+          }
+        });
+        
+        const buffer = Buffer.from(response.data);
+        const html = decodeResponse(buffer);
+        return await parseAucfanResults(html, query);
+        
+      } catch (retryError) {
+        console.error('❌ 再試行も失敗:', retryError.message);
+      }
+    }
+    
     // より詳細なエラー情報
     if (error.response) {
       console.error('- レスポンスステータス:', error.response.status);
-      console.error('- レスポンスヘッダー:', error.response.headers);
     }
     
     throw new Error(`オークファンの相場取得に失敗しました: ${error.message}`);
