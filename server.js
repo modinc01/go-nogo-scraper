@@ -741,4 +741,186 @@ if (hasLineConfig && line && client) {
       message += `📱 内訳: `;
       if (mercariCount > 0) message += `メルカリ${mercariCount}件 `;
       if (yahooCount > 0) message += `ヤフオク${yahooCount}件`;
-      message += '\n
+      message += '\n\n';
+    }
+    
+    // 最近の取引例（最大2件）
+    if (result.results.length > 0) {
+      message += '📋 最近の取引:\n';
+      const maxDisplay = Math.min(2, result.results.length);
+      
+      for (let i = 0; i < maxDisplay; i++) {
+        const auction = result.results[i];
+        let shortTitle = auction.title;
+        if (shortTitle.length > 20) {
+          shortTitle = shortTitle.substring(0, 20) + '...';
+        }
+        message += `${auction.platform}: ${auction.price.toLocaleString()}円\n`;
+      }
+    }
+    
+    return message;
+  }
+
+  /**
+   * テキストメッセージを処理
+   */
+  async function handleTextMessage(event) {
+    const messageText = event.message.text;
+    const userId = event.source.userId;
+    
+    try {
+      await client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '🔍 相場検索中...\n(メルカリ・ヤフオクのみ対象)'
+      });
+      
+      const parseResult = parseMessage(messageText);
+      
+      if (parseResult.error) {
+        const errorMsg = `❌ ${parseResult.error}\n\n💡 正しい形式で入力してください:\n\n例1:\niPhone 13 Pro\n80000\n\n例2:\n型番: iPhone 13 Pro\nオークション価格: 80000`;
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: errorMsg
+        });
+        return;
+      }
+      
+      console.log(`🔍 検索開始: ${parseResult.modelNumber}, ${parseResult.price}円`);
+      
+      const result = await processQuery(parseResult.modelNumber, parseResult.price);
+      const resultMessage = formatResultMessage(result);
+      
+      await client.pushMessage(userId, {
+        type: 'text',
+        text: resultMessage
+      });
+      
+      console.log(`✅ 検索完了: ${parseResult.modelNumber}`);
+      
+    } catch (error) {
+      console.error('❌ メッセージ処理エラー:', error);
+      
+      let errorMsg = `❌ 相場情報の取得に失敗しました:\n${error.message}`;
+      
+      if (error.message.includes('文字化け') || error.message.includes('encode')) {
+        errorMsg += '\n\n💡 日本語商品名の場合は型番での検索をお試しください';
+      }
+      
+      errorMsg += '\n\n時間をおいて再度お試しください。';
+      
+      try {
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: errorMsg
+        });
+      } catch (pushError) {
+        console.error('❌ エラーメッセージ送信失敗:', pushError);
+      }
+    }
+  }
+
+  /**
+   * LINEイベントを処理
+   */
+  async function handleEvent(event) {
+    if (event.type !== 'message' || event.message.type !== 'text') {
+      return Promise.resolve(null);
+    }
+    
+    return handleTextMessage(event);
+  }
+
+  // LINE Webhook
+  app.post('/webhook', (req, res) => {
+    Promise
+      .all(req.body.events.map(handleEvent))
+      .then((result) => res.json(result))
+      .catch((err) => {
+        console.error('❌ Webhook処理エラー:', err);
+        res.status(500).end();
+      });
+  });
+} else {
+  // LINE機能が無効の場合のダミーエンドポイント
+  app.post('/webhook', (req, res) => {
+    res.json({ 
+      error: 'LINE Bot機能が有効ではありません',
+      message: 'LINE_CHANNEL_SECRET と LINE_CHANNEL_ACCESS_TOKEN を設定してください'
+    });
+  });
+}
+
+// ヘルスチェック
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    version: '2.2.0',
+    lineBot: !!(hasLineConfig && client),
+    aucfanLogin: false,
+    features: [
+      'japanese_support',
+      'cost_calculation_with_fees',
+      'mercari_yahoo_auction_only',
+      'ad_content_removal',
+      'statistical_outlier_detection'
+    ]
+  });
+});
+
+// ルートパス
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'オークファン相場検索API v2.2（手数料・消費税対応版）',
+    status: 'running',
+    improvements: [
+      '✅ 日本語検索完全対応',
+      '✅ 手数料5% + 消費税10%込み計算',
+      '✅ メルカリ・ヤフオク限定検索',
+      '✅ 広告データ完全除外',
+      '✅ シンプルでわかりやすい判定'
+    ],
+    endpoints: [
+      'POST /api/search - 相場検索API',
+      'POST /webhook - LINE Bot webhook (if enabled)',
+      'GET /health - ヘルスチェック'
+    ],
+    usage: {
+      api: {
+        url: '/api/search',
+        method: 'POST',
+        body: {
+          modelNumber: 'iPhone 13 Pro',
+          auctionPrice: 80000
+        }
+      }
+    }
+  });
+});
+
+// サーバー起動
+app.listen(PORT, () => {
+  console.log(`🚀 サーバーが起動しました: http://localhost:${PORT}`);
+  console.log(`📱 API URL: https://go-nogo-scraper.onrender.com/api/search`);
+  
+  if (hasLineConfig && client) {
+    console.log(`📱 LINE Bot Webhook URL: https://go-nogo-scraper.onrender.com/webhook`);
+    console.log('✅ LINE Bot設定完了');
+  } else {
+    console.log('📱 LINE Bot機能は無効です（環境変数が設定されていません）');
+    if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
+      console.warn('⚠️  LINE_CHANNEL_ACCESS_TOKEN が設定されていません');
+    }
+    if (!process.env.LINE_CHANNEL_SECRET) {
+      console.warn('⚠️  LINE_CHANNEL_SECRET が設定されていません');
+    }
+  }
+  
+  console.log('🔧 主要機能:');
+  console.log('- 日本語商品名検索対応（文字化け解決）');
+  console.log('- 手数料5% + 消費税10%込み原価計算');
+  console.log('- メルカリ・ヤフオク限定（Yahoo!ショッピング除外）');
+  console.log('- 広告データ（初月無料等）完全除外');
+  console.log('- シンプルな色分け判定表示');
+});
