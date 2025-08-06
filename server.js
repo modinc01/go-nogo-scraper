@@ -1316,8 +1316,34 @@ app.listen(PORT, () => {
   console.log('- Keep-alive機能でスリープ対策');
   console.log('- タイムアウト保護（60秒制限）');
   
-  // Keep-alive機能を開始
-  startKeepAlive();
+  // Keep-alive機能を開始（エラーハンドリング付き）
+  try {
+    if (typeof startKeepAlive === 'function') {
+      startKeepAlive();
+    } else {
+      console.warn('⚠️ startKeepAlive関数が見つかりません。手動でKeep-alive機能を開始します。');
+      
+      // 手動でKeep-alive機能を定義・実行
+      if (!isKeepAliveActive) {
+        isKeepAliveActive = true;
+        console.log('🔄 手動Keep-alive機能を開始します');
+        
+        setInterval(async () => {
+          try {
+            await axios.get('https://go-nogo-scraper.onrender.com/health', {
+              timeout: 10000
+            });
+            console.log('💗 Keep-alive ping成功:', new Date().toLocaleString('ja-JP'));
+          } catch (error) {
+            console.log('⚠️ Keep-alive ping失敗:', error.message);
+          }
+        }, 10 * 60 * 1000);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Keep-alive機能の開始に失敗:', error.message);
+    console.log('⚠️ Keep-alive機能なしで継続します。手動で /wake エンドポイントをアクセスしてください。');
+  }
   
   console.log(`⏰ サーバー起動完了: ${new Date().toLocaleString('ja-JP')}`);
 });
