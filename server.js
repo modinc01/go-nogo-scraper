@@ -1102,9 +1102,13 @@ if (hasLineConfig && line && client) {
     const userId = event.source.userId;
     
     try {
+      // サーバー覚醒確認
+      await ensureServerAwake();
+      
+      // 即座に処理中メッセージを送信
       await client.replyMessage(event.replyToken, {
         type: 'text',
-        text: '🔍 相場検索中...\n(メルカリ・ヤフオク直近1年)'
+        text: '🔍 相場検索中...\n(メルカリ・ヤフオク直近1年)\n※処理に最大60秒かかる場合があります'
       });
       
       const parseResult = parseMessage(messageText);
@@ -1118,28 +1122,49 @@ if (hasLineConfig && line && client) {
         return;
       }
       
-      console.log(`🔍 検索開始: ${parseResult.modelNumber}, ${parseResult.price}円`);
+      console.log(`🔍 検索開始: ${parseResult.modelNumber}, ${parseResult.price}円 - ${new Date().toLocaleString('ja-JP')}`);
       
-      const result = await processQuery(parseResult.modelNumber, parseResult.price);
+      // タイムアウト対策：Promise.raceで最大60秒に制限
+      const searchPromise = processQuery(parseResult.modelNumber, parseResult.price);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('検索がタイムアウトしました（60秒）')), 60000)
+      );
+      
+      const result = await Promise.race([searchPromise, timeoutPromise]);
       const resultMessage = formatResultMessage(result);
       
-      await client.pushMessage(userId, {
-        type: 'text',
-        text: resultMessage
-      });
+      // 結果送信時にもエラーハンドリング
+      try {
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: resultMessage
+        });
+      } catch (pushError) {
+        console.error('❌ メッセージ送信エラー:', pushError);
+        
+        // 送信失敗時は短縮版を試行
+        const shortMessage = `${result.judgment?.emoji || '📊'} ${result.judgment?.decision || '検索完了'}\n平均相場: ${result.avgPrice?.toLocaleString() || '不明'}円\n検索結果: ${result.count || 0}件`;
+        
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: shortMessage
+        });
+      }
       
-      console.log(`✅ 検索完了: ${parseResult.modelNumber} (${result.count}件取得)`);
+      console.log(`✅ 検索完了: ${parseResult.modelNumber} (${result.count}件取得) - ${new Date().toLocaleString('ja-JP')}`);
       
     } catch (error) {
-      console.error('❌ メッセージ処理エラー:', error);
+      console.error('❌ メッセージ処理エラー:', error, '- 時刻:', new Date().toLocaleString('ja-JP'));
       
       let errorMsg = `❌ 相場情報の取得に失敗しました:\n${error.message}`;
       
-      if (error.message.includes('文字化け') || error.message.includes('encode')) {
+      if (error.message.includes('タイムアウト')) {
+        errorMsg += '\n\n⏰ 処理に時間がかかりすぎました。しばらく待ってから再度お試しください。';
+      } else if (error.message.includes('文字化け') || error.message.includes('encode')) {
         errorMsg += '\n\n💡 日本語商品名の場合は型番での検索をお試しください';
+      } else {
+        errorMsg += '\n\n🔄 サーバーがスリープ状態の可能性があります。もう一度送信してください。';
       }
-      
-      errorMsg += '\n\n時間をおいて再度お試しください。';
       
       try {
         await client.pushMessage(userId, {
@@ -1148,6 +1173,16 @@ if (hasLineConfig && line && client) {
         });
       } catch (pushError) {
         console.error('❌ エラーメッセージ送信失敗:', pushError);
+        
+        // 最終手段：シンプルなエラーメッセージ
+        try {
+          await client.pushMessage(userId, {
+            type: 'text',
+            text: '❌ 処理に失敗しました。しばらく待ってから再度お試しください。'
+          });
+        } catch (finalError) {
+          console.error('❌ 最終エラーメッセージ送信も失敗:', finalError);
+        }
       }
     }
   }
@@ -1178,14 +1213,23 @@ if (hasLineConfig && line && client) {
   });
 }
 
-// ヘルスチェック
+// ヘルスチェック（Keep-alive対応）
 app.get('/health', (req, res) => {
+  const uptime = process.uptime();
+  const memory = process.memoryUsage();
+  
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    version: '2.3.0',
+    uptime: `${Math.floor(uptime / 60)}分${Math.floor(uptime % 60)}秒`,
+    memory: {
+      used: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
+      total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
+    },
+    version: '2.4.0',
     lineBot: !!(hasLineConfig && client),
     aucfanLogin: false,
+    keepAlive: isKeepAliveActive,
     features: [
       'japanese_support',
       'cost_calculation_with_fees',
@@ -1194,8 +1238,20 @@ app.get('/health', (req, res) => {
       'ad_content_removal',
       'statistical_outlier_detection_relaxed',
       'one_year_data_only',
-      'no_20_item_limit'
+      'no_20_item_limit',
+      'keep_alive_system',
+      'timeout_protection'
     ]
+  });
+});
+
+// Wake-up用エンドポイント
+app.get('/wake', (req, res) => {
+  console.log('🔔 Wake-upリクエストを受信:', new Date().toLocaleString('ja-JP'));
+  res.json({
+    message: 'サーバーは覚醒しています',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
@@ -1257,4 +1313,11 @@ app.listen(PORT, () => {
   console.log('- 20件制限撤廃でより多くのデータを活用');
   console.log('- 統計的外れ値除去を緩和（2.0倍に変更）');
   console.log('- 広告データ（初月無料等）完全除外');
+  console.log('- Keep-alive機能でスリープ対策');
+  console.log('- タイムアウト保護（60秒制限）');
+  
+  // Keep-alive機能を開始
+  startKeepAlive();
+  
+  console.log(`⏰ サーバー起動完了: ${new Date().toLocaleString('ja-JP')}`);
 });
