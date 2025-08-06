@@ -1102,9 +1102,6 @@ if (hasLineConfig && line && client) {
     const userId = event.source.userId;
     
     try {
-      // サーバー覚醒確認
-      await ensureServerAwake();
-      
       // 即座に処理中メッセージを送信
       await client.replyMessage(event.replyToken, {
         type: 'text',
@@ -1156,14 +1153,18 @@ if (hasLineConfig && line && client) {
     } catch (error) {
       console.error('❌ メッセージ処理エラー:', error, '- 時刻:', new Date().toLocaleString('ja-JP'));
       
-      let errorMsg = `❌ 相場情報の取得に失敗しました:\n${error.message}`;
+      let errorMsg = '';
       
       if (error.message.includes('タイムアウト')) {
-        errorMsg += '\n\n⏰ 処理に時間がかかりすぎました。しばらく待ってから再度お試しください。';
+        errorMsg = '⏰ 処理に時間がかかりすぎました。\n\n🔄 サーバーの状態を確認してもう一度お試しください。';
       } else if (error.message.includes('文字化け') || error.message.includes('encode')) {
-        errorMsg += '\n\n💡 日本語商品名の場合は型番での検索をお試しください';
+        errorMsg = '❌ 文字エンコーディングエラーが発生しました。\n\n💡 英数字での検索をお試しください。';
+      } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        errorMsg = '🌐 ネットワーク接続エラーが発生しました。\n\n🔄 しばらく待ってから再度お試しください。';
+      } else if (error.response && error.response.status >= 500) {
+        errorMsg = '🔧 サーバーエラーが発生しました。\n\n🔄 時間をおいて再度お試しください。';
       } else {
-        errorMsg += '\n\n🔄 サーバーがスリープ状態の可能性があります。もう一度送信してください。';
+        errorMsg = '❌ 処理中にエラーが発生しました。\n\n🔄 もう一度メッセージを送信してください。\n\n💡 サーバーがスリープしている可能性があります。';
       }
       
       try {
@@ -1229,7 +1230,7 @@ app.get('/health', (req, res) => {
     version: '2.4.0',
     lineBot: !!(hasLineConfig && client),
     aucfanLogin: false,
-    keepAlive: isKeepAliveActive,
+    keepAlive: !!keepAliveInterval,
     features: [
       'japanese_support',
       'cost_calculation_with_fees',
@@ -1240,7 +1241,8 @@ app.get('/health', (req, res) => {
       'one_year_data_only',
       'no_20_item_limit',
       'keep_alive_system',
-      'timeout_protection'
+      'timeout_protection',
+      'improved_error_handling'
     ]
   });
 });
@@ -1251,7 +1253,8 @@ app.get('/wake', (req, res) => {
   res.json({
     message: 'サーバーは覚醒しています',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    keepAlive: !!keepAliveInterval
   });
 });
 
@@ -1315,34 +1318,15 @@ app.listen(PORT, () => {
   console.log('- 広告データ（初月無料等）完全除外');
   console.log('- Keep-alive機能でスリープ対策');
   console.log('- タイムアウト保護（60秒制限）');
+  console.log('- 改善されたエラーハンドリング');
   
-  // Keep-alive機能を開始（エラーハンドリング付き）
+  // Keep-alive機能を開始（シンプル版）
   try {
-    if (typeof startKeepAlive === 'function') {
-      startKeepAlive();
-    } else {
-      console.warn('⚠️ startKeepAlive関数が見つかりません。手動でKeep-alive機能を開始します。');
-      
-      // 手動でKeep-alive機能を定義・実行
-      if (!isKeepAliveActive) {
-        isKeepAliveActive = true;
-        console.log('🔄 手動Keep-alive機能を開始します');
-        
-        setInterval(async () => {
-          try {
-            await axios.get('https://go-nogo-scraper.onrender.com/health', {
-              timeout: 10000
-            });
-            console.log('💗 Keep-alive ping成功:', new Date().toLocaleString('ja-JP'));
-          } catch (error) {
-            console.log('⚠️ Keep-alive ping失敗:', error.message);
-          }
-        }, 10 * 60 * 1000);
-      }
-    }
+    initKeepAlive();
+    console.log('✅ Keep-alive機能が正常に開始されました');
   } catch (error) {
     console.error('❌ Keep-alive機能の開始に失敗:', error.message);
-    console.log('⚠️ Keep-alive機能なしで継続します。手動で /wake エンドポイントをアクセスしてください。');
+    console.log('⚠️ Keep-alive機能なしで継続します');
   }
   
   console.log(`⏰ サーバー起動完了: ${new Date().toLocaleString('ja-JP')}`);
