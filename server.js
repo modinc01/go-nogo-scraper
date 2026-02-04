@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config();const express=require('express');const puppeteer=require('puppeteer');const cheerio=require('cheerio');const app=express();const PORT=process.env.PORT||3000;let line,client;const hasLineConfig=process.env.LINE_CHANNEL_SECRET&&process.env.LINE_CHANNEL_ACCESS_TOKEN;require('dotenv').config();
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
