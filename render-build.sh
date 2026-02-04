@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+echo "📦 Installing Node.js dependencies..."
+npm install
+
+echo "✅ Build complete"#!/usr/bin/env bash
+set -e
+
 echo "🔧 Installing Puppeteer dependencies..."
 
 apt-get update
