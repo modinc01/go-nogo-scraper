@@ -1,4 +1,251 @@
-require('dotenv').config();const express=require('express');const puppeteer=require('puppeteer');const cheerio=require('cheerio');const app=express();const PORT=process.env.PORT||3000;let line,client;const hasLineConfig=process.env.LINE_CHANNEL_SECRET&&process.env.LINE_CHANNEL_ACCESS_TOKEN;require('dotenv').config();
+require('dotenv').config();
+const express = require('express');
+const puppeteer = require('puppeteer');
+const cheerio = require('cheerio');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+let line, client;
+const hasLineConfig = process.env.LINE_CHANNEL_SECRET && process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+if (hasLineConfig) {
+      try {
+              line = require('@line/bot-sdk');
+              const config = {
+                        channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+                        channelSecret: process.env.LINE_CHANNEL_SECRET,
+              };
+              client = new line.Client(config);
+              console.log('✅ LINE Bot機能が有効です');
+      } catch (e) {
+              console.log('⚠️ LINE SDK not found');
+      }
+}
+
+let browserInstance = null;
+
+async function getBrowser() {
+      if (!browserInstance) {
+              console.log('🚀 Puppeteerブラウザを起動中...');
+              browserInstance = await puppeteer.launch({
+                        headless: true,
+                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+              });
+              console.log('✅ Puppeteerブラウザ起動完了');
+      }
+      return browserInstance;
+}
+
+function extractPrice(priceText) {
+      if (!priceText) return 0;
+      const numStr = priceText.replace(/[^\d]/g, '');
+      const price = parseInt(numStr);
+      return isNaN(price) ? 0 : price;
+}
+
+async function scrapeAucfanWithPuppeteer(query) {
+      const browser = await getBrowser();
+      const page = await browser.newPage();
+      
+      try {
+              console.log(`🔍 検索開始: ${query}`);
+              await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+              
+              const url = `https://aucfan.com/search1/q-${encodeURIComponent(query)}/s-mix/`;
+              console.log(`📍 URL: ${url}`);
+              
+              await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+              
+              try {
+                        await page.waitForSelector('a[href*="mercari"], a[href*="yahoo"]', { timeout: 10000 });
+                        console.log('✅ 商品データ読み込み完了');
+              } catch (e) {
+                        console.log('⚠️ 商品データが見つかりません');
+              }
+              
+              const html = await page.content();
+              const $ = cheerio.load(html);
+              const results = [];
+              
+              $('a[href*="mercari"]').each((index, element) => {
+                        const $link = $(element);
+                        const $parent = $link.closest('div, li, article');
+                        const title = $link.text().trim() || $parent.find('h3, h4').text().trim();
+                        const priceText = $parent.text().match(/(\d{1,3}(?:,\d{3})*|\d+)\s*円/);
+                        
+                        if (title && priceText) {
+                                    const price = extractPrice(priceText[0]);
+                                    if (price > 300 && title.length > 5) {
+                                                  results.push({ title: title.substring(0, 100), price, platform: 'メルカリ' });
+                                    }
+                        }
+              });
+              
+              $('a[href*="yahoo"][href*="auction"]').each((index, element) => {
+                        const $link = $(element);
+                        const $parent = $link.closest('div, li, article');
+                        const title = $link.text().trim() || $parent.find('h3, h4').text().trim();
+                        const priceText = $parent.text().match(/(\d{1,3}(?:,\d{3})*|\d+)\s*円/);
+                        
+                        if (title && priceText && !title.includes('ショッピング')) {
+                                    const price = extractPrice(priceText[0]);
+                                    if (price > 300 && title.length > 5) {
+                                                  results.push({ title: title.substring(0, 100), price, platform: 'ヤフオク' });
+                                    }
+                        }
+              });
+              
+              console.log(`✅ 総取得件数: ${results.length}件`);
+              
+              let avgPrice = 0, maxPrice = 0, minPrice = 0;
+              if (results.length > 0) {
+                        const prices = results.map(r => r.price);
+                        avgPrice = Math.round(prices.reduce((sum, p) => sum + p, 0) / prices.length);
+                        maxPrice = Math.max(...prices);
+                        minPrice = Math.min(...prices);
+              }
+              
+              return { query, results, count: results.length, avgPrice, maxPrice, minPrice };
+              
+      } catch (error) {
+              console.error('❌ スクレイピングエラー:', error.message);
+              throw error;
+      } finally {
+              await page.close();
+      }
+}
+
+function evaluatePurchase(auctionPrice, avgPrice, count) {
+      if (avgPrice === 0 || count === 0) {
+              return { emoji: "❌", decision: "判定不可", reason: "相場データなし" };
+      }
+      if (count < 3) {
+              return { emoji: "⚠️", decision: "判定困難", reason: `データ不足（${count}件のみ）` };
+      }
+      
+      const totalCost = Math.round(auctionPrice * 1.155);
+      const profit = avgPrice - totalCost;
+      const profitRate = Math.round((profit / totalCost) * 100);
+      
+      if (profitRate >= 50) return { emoji: "🟢", decision: "仕入れ推奨", reason: `利益率+${profitRate}%`, totalCost };
+      else if (profitRate >= 20) return { emoji: "🟡", decision: "仕入れ検討", reason: `利益率+${profitRate}%`, totalCost };
+      else if (profitRate >= 0) return { emoji: "🟠", decision: "慎重検討", reason: `利益率+${profitRate}%`, totalCost };
+      else return { emoji: "🔴", decision: "仕入れNG", reason: `損失${Math.abs(profitRate)}%`, totalCost };
+}
+
+async function processQuery(modelNumber, auctionPrice) {
+      try {
+              const result = await scrapeAucfanWithPuppeteer(modelNumber);
+              const judgment = evaluatePurchase(auctionPrice, result.avgPrice, result.count);
+              const handlingFee = Math.round(auctionPrice * 0.05);
+              const totalCost = Math.round(auctionPrice * 1.155);
+              const profit = result.avgPrice - totalCost;
+              
+              return { ...result, auctionPrice, handlingFee, totalCost, judgment, profit };
+      } catch (error) {
+              console.error('❌ 処理エラー:', error);
+              throw error;
+      }
+}
+
+if (hasLineConfig && line && client) {
+      app.use('/webhook', line.middleware({
+              channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+              channelSecret: process.env.LINE_CHANNEL_SECRET,
+      }));
+}
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.post('/api/search', async (req, res) => {
+      try {
+              const { modelNumber, auctionPrice } = req.body;
+              if (!modelNumber || !auctionPrice) {
+                        return res.status(400).json({ error: '型番とオークション価格を指定してください' });
+              }
+              const result = await processQuery(modelNumber, parseInt(auctionPrice));
+              res.json(result);
+      } catch (error) {
+              res.status(500).json({ error: error.message });
+      }
+});
+
+if (hasLineConfig && line && client) {
+      function parseMessage(message) {
+              const lines = message.trim().split('\n');
+              let modelNumber = lines[0] || '';
+              let price = 0;
+              if (lines.length >= 2) {
+                        const priceMatch = lines[1].match(/([0-9,]+)/);
+                        if (priceMatch) price = parseInt(priceMatch[1].replace(/,/g, ''));
+              }
+              if (!modelNumber) return { error: '型番が見つかりません' };
+              if (price === 0) return { error: 'オークション価格が見つかりません' };
+              return { modelNumber, price };
+      }
+    
+      async function handleTextMessage(event) {
+              const userId = event.source.userId;
+              try {
+                        await client.replyMessage(event.replyToken, {
+                                    type: 'text',
+                                    text: '🔍 相場検索中...'
+                        });
+                        
+                        const parseResult = parseMessage(event.message.text);
+                        if (parseResult.error) {
+                                    await client.pushMessage(userId, { type: 'text', text: `❌ ${parseResult.error}` });
+                                    return;
+                        }
+                        
+                        const result = await processQuery(parseResult.modelNumber, parseResult.price);
+                        let msg = `${result.judgment.emoji} ${result.judgment.decision}\n${result.judgment.reason}\n\n`;
+                        msg += `📊 【${result.query}】\n💰 平均相場: ${result.avgPrice.toLocaleString()}円\n`;
+                        msg += `💵 オークション価格: ${result.auctionPrice.toLocaleString()}円\n`;
+                        msg += `💼 総原価: ${result.totalCost.toLocaleString()}円\n`;
+                        msg += `📈 検索結果: ${result.count}件\n`;
+                        
+                        await client.pushMessage(userId, { type: 'text', text: msg });
+              } catch (error) {
+                        console.error('❌ エラー:', error);
+                        await client.pushMessage(userId, { type: 'text', text: '❌ 処理中にエラーが発生しました' });
+              }
+      }
+    
+      app.post('/webhook', (req, res) => {
+              Promise.all(req.body.events.map(event => {
+                        if (event.type === 'message' && event.message.type === 'text') {
+                                    return handleTextMessage(event);
+                        }
+                        return Promise.resolve(null);
+              })).then(() => res.json({})).catch((err) => res.status(500).end());
+      });
+}
+
+app.get('/health', (req, res) => {
+      res.json({ status: 'ok', version: '2.0.0-puppeteer' });
+});
+
+app.get('/', (req, res) => {
+      res.json({ message: 'オークファン相場検索API v2.0 - Puppeteer版', status: 'running' });
+});
+
+app.listen(PORT, async () => {
+      console.log(`🚀 サーバー起動: http://localhost:${PORT}`);
+      try {
+              await getBrowser();
+              console.log('✅ Puppeteerブラウザ準備完了');
+      } catch (error) {
+              console.error('❌ Puppeteerブラウザ起動失敗:', error.message);
+      }
+});
+
+process.on('SIGINT', async () => {
+      if (browserInstance) await browserInstance.close();
+      process.exit(0);
+});require('dotenv').config();const express=require('express');const puppeteer=require('puppeteer');const cheerio=require('cheerio');const app=express();const PORT=process.env.PORT||3000;let line,client;const hasLineConfig=process.env.LINE_CHANNEL_SECRET&&process.env.LINE_CHANNEL_ACCESS_TOKEN;require('dotenv').config();
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
