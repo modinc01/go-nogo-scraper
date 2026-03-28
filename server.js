@@ -1,5 +1,5 @@
 // ============================================================
-// LINE 相場判定 Bot v6.0 — OpenAI Responses API + オークファン MCP サーバー
+// LINE 相場判定 Bot v6.0.1 — OpenAI Responses API + オークファン MCP サーバー
 // ChatGPT の本番 MCP サーバーと同じデータソースを LINE から利用
 // ============================================================
 const express = require('express');
@@ -79,11 +79,25 @@ const SYSTEM_PROMPT = `あなたは日本のオークション・フリマ市場
 - LINEメッセージとして読みやすいよう、簡潔に整理する`;
 // ── LINE 署名検証 ────────────────────────────────
 function verifySignature(body, signature) {
-  if (!LINE_CONFIG.channelSecret) return true;
+  if (!LINE_CONFIG.channelSecret) {
+    console.log('⚠️ channelSecret未設定、署名検証スキップ');
+    return true;
+  }
+  if (!signature) {
+    console.warn('⚠️ x-line-signature ヘッダーなし');
+    return false;
+  }
+  const bodyStr = Buffer.isBuffer(body) ? body : Buffer.from(body);
   const hash = crypto
     .createHmac('SHA256', LINE_CONFIG.channelSecret)
-    .update(body)
+    .update(bodyStr)
     .digest('base64');
+  console.log('🔐 署名検証:', {
+    bodyLength: bodyStr.length,
+    computed: hash.slice(0, 10) + '...',
+    received: signature.slice(0, 10) + '...',
+    match: hash === signature
+  });
   return hash === signature;
 }
 
@@ -263,7 +277,7 @@ async function callAucfanMCPDirectly(query) {
       params: {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'line-aucfan-bot', version: '6.0.0' },
+        clientInfo: { name: 'line-aucfan-bot', version: '6.0.1' },
       },
       id: 1,
     },
@@ -296,7 +310,7 @@ app.use(express.json());
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '6.0.0-mcp',
+    version: '6.0.1-mcp',
     mcpServer: AUCFAN_MCP_URL,
     hasOAuthToken: !!AUCFAN_OAUTH_TOKEN,
     timestamp: new Date().toISOString(),
@@ -307,13 +321,21 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'LINE 相場判定 Bot (MCP版)',
-    version: '6.0.0-mcp',
+    version: '6.0.1-mcp',
     status: 'running',
   });
 });
 
 // ── LINE Webhook ─────────────────────────────────
 app.post('/webhook', async (req, res) => {
+  console.log('📨 Webhook受信:', {
+    contentType: req.headers['content-type'],
+    bodyType: typeof req.body,
+    isBuffer: Buffer.isBuffer(req.body),
+    bodyLength: req.body?.length || 0,
+    hasSignature: !!req.headers['x-line-signature'],
+  });
+
   const rawBody = req.body;
   const signature = req.headers['x-line-signature'];
 
