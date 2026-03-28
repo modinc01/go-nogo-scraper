@@ -99,14 +99,13 @@ function verifySignature(body, signature) {
     secretPrefix: LINE_CONFIG.channelSecret.slice(0, 8) + '...',
     secretLength: LINE_CONFIG.channelSecret.length,
     bodyLength: bodyStr.length,
-    bodyPreview: bodyStr.toString().slice(0, 80),
-    computed: hash,
-    received: signature,
+    computed: hash.slice(0, 10) + '...',
+    received: signature.slice(0, 10) + '...',
     match: isValid
   });
   if (!isValid) {
     console.warn('⚠️ 署名不一致 — デバッグ用に通過させます');
-    return true; // 一時的にデバッグ用：署名検証失敗でも通過
+    return true;
   }
   return true;
 }
@@ -114,7 +113,6 @@ function verifySignature(body, signature) {
 // ── LINE メッセージ送信 ──────────────────────────────
 async function replyMessage(replyToken, text) {
   const messages = [];
-  // LINE の文字数制限対応（5000文字）
   const chunks = [];
   let remaining = text;
   while (remaining.length > 0) {
@@ -175,7 +173,6 @@ async function pushMessage(userId, text) {
 async function askGPTwithMCP(userMessage) {
   console.log('🤖 [GPT+MCP] 処理開始:', userMessage.slice(0, 50));
 
-  // MCP ツール設定
   const mcpTool = {
     type: 'mcp',
     server_label: 'aucfan',
@@ -183,8 +180,8 @@ async function askGPTwithMCP(userMessage) {
     require_approval: 'never',
   };
 
-  // OAuth トークンがある場合は認証ヘッダーを追加
-  if (AUCFAN_OAUTH_TOKEN) {
+  // OAuth トークンがある場合は認証ヘッダーを追加（placeholder は除外）
+  if (AUCFAN_OAUTH_TOKEN && AUCFAN_OAUTH_TOKEN !== 'placeholder') {
     mcpTool.headers = {
       Authorization: `Bearer ${AUCFAN_OAUTH_TOKEN}`,
     };
@@ -201,12 +198,10 @@ async function askGPTwithMCP(userMessage) {
 
     console.log('✅ [GPT+MCP] 応答取得');
 
-    // output_text が使える場合はそれを使う
     if (response.output_text) {
       return response.output_text;
     }
 
-    // output 配列から text を取得
     if (response.output && Array.isArray(response.output)) {
       const textOutputs = response.output
         .filter(item => item.type === 'message')
@@ -228,7 +223,6 @@ async function askGPTwithMCP(userMessage) {
     console.error('❌ [GPT+MCP] エラー:', err.message);
     console.error('❌ [GPT+MCP] 詳細:', JSON.stringify(err.error || err.response?.data || {}).slice(0, 500));
 
-    // Responses API が使えない場合は Chat Completions にフォールバック
     if (err.message?.includes('responses') || err.status === 404) {
       console.log('⚠️ Responses API 未対応、Chat Completions にフォールバック');
       return await askGPTFallback(userMessage);
@@ -238,11 +232,10 @@ async function askGPTwithMCP(userMessage) {
   }
 }
 
-// ── フォールバック: Chat Completions API (MCP ツールを手動で呼ぶ) ──
+// ── フォールバック: Chat Completions API ──
 async function askGPTFallback(userMessage) {
   console.log('🔄 [Fallback] Chat Completions API を使用');
 
-  // まず MCP サーバーに直接ツールを呼び出す
   let aucfanData = null;
   try {
     aucfanData = await callAucfanMCPDirectly(userMessage);
@@ -255,7 +248,6 @@ async function askGPTFallback(userMessage) {
     { role: 'user', content: userMessage },
   ];
 
-  // MCP から取得したデータがある場合はコンテキストとして追加
   if (aucfanData) {
     messages.push({
       role: 'system',
@@ -281,16 +273,14 @@ async function askGPTFallback(userMessage) {
 async function callAucfanMCPDirectly(query) {
   console.log('🔌 [MCP Direct] aucfan_search_api 呼び出し:', query.slice(0, 50));
 
-  // MCP Streamable HTTP プロトコルで初期化
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
   };
-  if (AUCFAN_OAUTH_TOKEN) {
+  if (AUCFAN_OAUTH_TOKEN && AUCFAN_OAUTH_TOKEN !== 'placeholder') {
     headers.Authorization = `Bearer ${AUCFAN_OAUTH_TOKEN}`;
   }
 
-  // Step 1: Initialize
   const initResponse = await axios.post(
     AUCFAN_MCP_URL,
     {
@@ -299,7 +289,7 @@ async function callAucfanMCPDirectly(query) {
       params: {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'line-aucfan-bot', version: '6.0.0' },
+        clientInfo: { name: 'line-aucfan-bot', version: '6.0.3' },
       },
       id: 1,
     },
@@ -307,7 +297,6 @@ async function callAucfanMCPDirectly(query) {
   );
   console.log('🔌 [MCP] Initialize:', JSON.stringify(initResponse.data).slice(0, 200));
 
-  // Step 2: Call aucfan_search_api
   const searchResponse = await axios.post(
     AUCFAN_MCP_URL,
     {
@@ -334,9 +323,9 @@ app.use(express.json());
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '6.0.2-debug',
+    version: '6.0.3-fix-oauth',
     mcpServer: AUCFAN_MCP_URL,
-    hasOAuthToken: !!AUCFAN_OAUTH_TOKEN,
+    hasOAuthToken: !!(AUCFAN_OAUTH_TOKEN && AUCFAN_OAUTH_TOKEN !== 'placeholder'),
     timestamp: new Date().toISOString(),
     uptime: Math.floor(process.uptime() / 60) + '分',
   });
@@ -345,7 +334,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'LINE 相場判定 Bot (MCP版)',
-    version: '6.0.2-debug',
+    version: '6.0.3-fix-oauth',
     status: 'running',
   });
 });
@@ -388,14 +377,12 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`📩 受信: "${userMessage}" from ${userId}`);
 
-    // 即座に「分析中」を返す
     try {
       await replyMessage(replyToken, '🔍 オークファンMCPサーバーで相場データを検索中...\n少々お待ちください（10〜30秒）');
     } catch (err) {
       console.error('⚠️ 初期応答エラー:', err.message);
     }
 
-    // 非同期で GPT + MCP 処理
     (async () => {
       try {
         const answer = await askGPTwithMCP(userMessage);
@@ -418,6 +405,6 @@ app.listen(PORT, () => {
   console.log(`🚀 サーバー起動: http://localhost:${PORT}`);
   console.log(`✅ OpenAI Responses API + MCP 相場分析エンジン`);
   console.log(`✅ MCP Server: ${AUCFAN_MCP_URL}`);
-  console.log(`✅ OAuth Token: ${AUCFAN_OAUTH_TOKEN ? '設定済み' : '未設定'}`);
+  console.log(`✅ OAuth Token: ${AUCFAN_OAUTH_TOKEN && AUCFAN_OAUTH_TOKEN !== 'placeholder' ? '設定済み' : '未設定(認証なし)'}`);
   console.log(`✅ LINE Webhook: /webhook`);
 });
